@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { mockReqRes, mockFetch, cdsEnvelope } from "./helpers.js";
-import zones from "../api/zones.js";
+import zones, { liteFeature } from "../api/zones.js";
 import policies from "../api/policies.js";
 import meters from "../api/meters.js";
 import { cdsGet, unwrap } from "../api/_cds.js";
@@ -104,6 +104,24 @@ describe("GET /api/zones", () => {
     expect(f.calls).toHaveLength(2);
     expect(f.calls[1].url.searchParams.get("offset")).toBe("500");
     expect(res.json.features).toHaveLength(507);
+  });
+
+  it("lite=1 strips properties, rounds coords to 5 dp, and caches longer", async () => {
+    const z = zone(1, { curb_policy_ids: ["p1"], published_date: "2026-01-01", last_updated_date: "2026-10-30", extra: { big: "x".repeat(100) } });
+    z.geometry.coordinates = [[-71.0812345678, 42.3512345678], [-71.08, 42.35]];
+    mockFetch([{ match: () => true, respond: { body: cdsEnvelope("zones", [z]) } }]);
+    const { req, res } = mockReqRes({ bbox: "0,0,1,1", lite: "1" });
+    await zones(req, res);
+    const f = res.json.features[0];
+    expect(Object.keys(f.properties).sort()).toEqual(["curb_policy_ids", "curb_zone_id", "street_name", "street_side", "user_zone_id"]);
+    expect(f.geometry.coordinates[0]).toEqual([-71.08123, 42.35123]);
+    expect(res.headers["cache-control"]).toMatch(/s-maxage=21600/);
+  });
+
+  it("liteFeature handles polygons and missing geometry", () => {
+    const poly = liteFeature({ properties: { curb_zone_id: "a" }, geometry: { type: "Polygon", coordinates: [[[0.123456789, 0], [1, 1], [0.123456789, 0]]] } });
+    expect(poly.geometry.coordinates[0][0]).toEqual([0.12346, 0]);
+    expect(liteFeature({ properties: { curb_zone_id: "b" }, geometry: null }).geometry).toBeNull();
   });
 
   it("502s with the upstream error when CDS fails", async () => {

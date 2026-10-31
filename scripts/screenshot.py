@@ -15,13 +15,14 @@ INJECT = """() => new Promise(res => {
     let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
     const bld = [], st = [];
     const [cx, cy] = [-71.0589, 42.3601];
-    for (let i = -14; i <= 14; i++) for (let j = -14; j <= 14; j++) {
+    const R = map.getZoom() < 13 ? 40 : 14;
+    for (let i = -R; i <= R; i++) for (let j = -R; j <= R; j++) {
       const x = cx + i * 0.0025, y = cy + j * 0.0025;
       // street grid
-      if (i === -14) st.push({ type: "Feature", properties: { major: j % 4 === 0 }, geometry: { type: "LineString", coordinates: [[cx - 14 * 0.0025, y], [cx + 14 * 0.0025, y]] } });
-      if (j === -14) st.push({ type: "Feature", properties: { major: i % 5 === 0 }, geometry: { type: "LineString", coordinates: [[x, cy - 14 * 0.0025], [x, cy + 14 * 0.0025]] } });
+      if (i === -R) st.push({ type: "Feature", properties: { major: j % 4 === 0 }, geometry: { type: "LineString", coordinates: [[cx - R * 0.0025, y], [cx + R * 0.0025, y]] } });
+      if (j === -R) st.push({ type: "Feature", properties: { major: i % 5 === 0 }, geometry: { type: "LineString", coordinates: [[x, cy - R * 0.0025], [x, cy + R * 0.0025]] } });
       // 2-4 buildings per block
-      const n = 2 + Math.floor(rnd() * 3);
+      const n = R > 14 ? 1 : 2 + Math.floor(rnd() * 3);
       for (let k = 0; k < n; k++) {
         const w = 0.0005 + rnd() * 0.0009, h = 0.0005 + rnd() * 0.0009;
         const ox = x + 0.0003 + rnd() * (0.0025 - w - 0.0006), oy = y + 0.0003 + rnd() * (0.0025 - h - 0.0006);
@@ -33,8 +34,10 @@ INJECT = """() => new Promise(res => {
     map.addSource("demo-st", { type: "geojson", data: { type: "FeatureCollection", features: st } });
     const b3d = map.getLayer("buildings-3d");
     const paint = {}; for (const k of ["fill-extrusion-color","fill-extrusion-height","fill-extrusion-base","fill-extrusion-opacity","fill-extrusion-vertical-gradient"]) paint[k] = map.getPaintProperty("buildings-3d", k);
-    map.addLayer({ id: "demo-st-outline", type: "line", source: "demo-st", layout: { "line-cap": "round" }, paint: { "line-color": "#0b0d14", "line-width": ["case", ["get","major"], 22, 12] } }, "buildings-3d");
-    map.addLayer({ id: "demo-st", type: "line", source: "demo-st", layout: { "line-cap": "round" }, paint: { "line-color": ["case", ["get","major"], "#262c40", "#1b2030"], "line-width": ["case", ["get","major"], 18, 9] } }, "buildings-3d");
+    const rc = (id) => map.getPaintProperty(id, "line-color");
+    const z = map.getZoom(), big = z >= 15;
+    map.addLayer({ id: "demo-st-outline", type: "line", source: "demo-st", layout: { "line-cap": "round" }, paint: { "line-color": rc("road-outline"), "line-width": ["case", ["get","major"], big ? 22 : 3, big ? 12 : 1.5] } }, "buildings-3d");
+    map.addLayer({ id: "demo-st", type: "line", source: "demo-st", layout: { "line-cap": "round" }, paint: { "line-color": ["case", ["get","major"], rc("road-major"), rc("road-minor")], "line-width": ["case", ["get","major"], big ? 18 : 2, big ? 9 : 0.8] } }, "buildings-3d");
     map.addLayer({ id: "demo-bld", type: "fill-extrusion", source: "demo-bld", paint }, "buildings-3d");
     map.once("idle", res);
   };
@@ -45,7 +48,7 @@ INJECT = """() => new Promise(res => {
 async def main():
     async with async_playwright() as p:
         b = await p.chromium.launch(executable_path=CHROME, args=["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox"])
-        async def shot(w, h, out, mobile=False, popup=True, day="tue", hour=9, offline=True):
+        async def shot(w, h, out, mobile=False, popup=True, day="tue", hour=9, offline=True, view=None, theme=None):
             ctx = await b.new_context(viewport={"width": w, "height": h}, device_scale_factor=2, is_mobile=mobile, has_touch=mobile)
             page = await ctx.new_page()
             if offline:
@@ -61,8 +64,12 @@ async def main():
             await page.wait_for_timeout(1200)
             await page.select_option("#day", day)
             await page.fill("#hour", str(hour)); await page.dispatch_event("#hour", "input")
+            if theme:
+                cur = await page.evaluate("document.documentElement.dataset.theme")
+                if cur != theme: await page.click("#themeBtn"); await page.wait_for_timeout(800)
+            if view: await page.evaluate("v => window.__map.jumpTo(v)", view); await page.wait_for_timeout(600)
             if offline: log("inject"); await page.evaluate(INJECT); log("injected")
-            await page.wait_for_timeout(2500)
+            await page.wait_for_timeout(3000)
             if popup:
                 for dx, dy in [(0.62, 0.45), (0.55, 0.5), (0.7, 0.4), (0.6, 0.6), (0.5, 0.35), (0.66, 0.52)]:
                     await page.mouse.click(w * dx, h * dy); await page.wait_for_timeout(500)
@@ -71,7 +78,11 @@ async def main():
             print("saved", out, "|", await page.locator("#status").inner_text())
             await ctx.close()
         os.makedirs(OUT, exist_ok=True)
-        await shot(1440, 900, f"{OUT}/preview-desktop.png")
-        await shot(430, 860, f"{OUT}/preview-mobile.png", mobile=True, popup=False, hour=17)
+        BLOCK = {"center": [-71.0589, 42.3601], "zoom": 15.6, "pitch": 55, "bearing": -17}
+        CITY = {"center": [-71.07, 42.33], "zoom": 11.6, "pitch": 0, "bearing": 0}
+        await shot(1440, 900, f"{OUT}/preview-desktop.png", view=BLOCK, theme="dark")
+        await shot(1440, 900, f"{OUT}/preview-city.png", view=CITY, theme="dark", popup=False)
+        await shot(1440, 900, f"{OUT}/preview-light.png", view=BLOCK, theme="light")
+        await shot(430, 860, f"{OUT}/preview-mobile.png", mobile=True, popup=False, hour=17, view={"center": [-71.0589, 42.3601], "zoom": 15.2, "pitch": 55, "bearing": -17}, theme="dark")
         await b.close()
 asyncio.run(main())

@@ -3,7 +3,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import "./style.css";
 import { CATEGORIES, verdict, fmtRate, fmtSpan, dayKey, policyActive } from "./rules.js";
 import { DEMO_ZONES, DEMO_POLICIES } from "./demo.js";
-import { darkStyle, glowLayers } from "./basemap.js";
+import { buildStyle, LABEL_LAYERS, METER_LAYERS } from "./basemap.js";
 
 const $ = (s) => document.querySelector(s);
 const status = (msg, kind = "") => { const el = $("#status"); el.textContent = msg; el.className = `status ${kind}`; };
@@ -15,42 +15,63 @@ let demoMode = false;
 const hidden = new Set();          // hidden categories
 let day = dayKey(), hour = new Date().getHours();
 const fetchedTiles = new Set();
+let cityLoaded = false;            // citywide overview fetched once
+const CITY_BBOX = [-71.1912, 42.2279, -70.9860, 42.3969];
+const OVERVIEW_ZOOM = 13.2;        // below this: one citywide (lite) fetch; above: per-viewport fetches
+
+// ---------- theme ----------
+const colorExpr = ["match", ["get", "cat"], ...Object.entries(CATEGORIES).flatMap(([k, v]) => [k, v.color]), "#7b8294"];
+const hoverExpr = ["boolean", ["feature-state", "hover"], false];
+function savedTheme() {
+  try { const t = localStorage.getItem("theme"); if (t === "light" || t === "dark") return t; } catch {}
+  return matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+let theme = savedTheme();
+document.documentElement.dataset.theme = theme;
 
 // ---------- map ----------
 const map = new maplibregl.Map({
   container: "map",
   center: [-71.0589, 42.3601],
-  zoom: 15.2,
-  pitch: 58,
-  bearing: -17,
-  minZoom: 10,
+  zoom: 12.2,
+  pitch: 0,
+  bearing: 0,
+  minZoom: 9,
   maxZoom: 20,
-  maxPitch: 75,
+  maxPitch: 72,
   antialias: true,
   attributionControl: false,
-  style: darkStyle(),
+  style: buildStyle(theme, { colorExpr, hoverExpr }),
 });
 window.__map = map; // handy in devtools / screenshot script
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "bottom-right");
 map.addControl(new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true }), "bottom-right");
 map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-left");
 
-const colorExpr = ["match", ["get", "cat"], ...Object.entries(CATEGORIES).flatMap(([k, v]) => [k, v.color]), "#5c6370"];
-const hoverExpr = ["boolean", ["feature-state", "hover"], false];
+let metersData = null;
+function applyLayerToggles() {
+  for (const id of METER_LAYERS) map.setLayoutProperty(id, "visibility", $("#showMeters").checked ? "visible" : "none");
+  for (const id of LABEL_LAYERS) map.setLayoutProperty(id, "visibility", $("#showLabels").checked ? "visible" : "none");
+  map.setLayoutProperty("buildings-3d", "visibility", $("#show3d").checked ? "visible" : "none");
+}
+// After any setStyle (theme switch) the GeoJSON sources come back empty: refill them.
+map.on("style.load", () => {
+  applyLayerToggles();
+  repaint();
+  if (metersData) map.getSource("meters")?.setData(metersData);
+});
+
+// Google-Maps-style camera: flat at city scale, tilts in as you get close to the blocks (unless 3D is off).
+let autoTilt = true;
+map.on("zoomend", () => {
+  if (!autoTilt || !$("#show3d").checked) return;
+  const z = map.getZoom();
+  const want = z >= 15 ? 55 : z >= 14 ? 35 : 0;
+  if (Math.abs(map.getPitch() - want) > 5) map.easeTo({ pitch: want, duration: 500 });
+});
+map.on("pitchstart", (e) => { if (e.originalEvent) autoTilt = false; }); // user grabbed the pitch → stop auto-tilting
 
 map.on("load", () => {
-  map.addSource("zones", { type: "geojson", data: { type: "FeatureCollection", features: [] }, promoteId: "curb_zone_id" });
-  map.addSource("meters", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-
-  // Curb lines go after the 3D buildings so they draw on top and thread between towers.
-  for (const layer of glowLayers(colorExpr, hoverExpr)) map.addLayer(layer, "road-label");
-
-  map.addLayer({ id: "meters-glow", type: "circle", source: "meters", layout: { visibility: "none" },
-    paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 13, 5, 17, 14], "circle-color": "#3ea8ff", "circle-blur": 1, "circle-opacity": 0.6 } }, "road-label");
-  map.addLayer({ id: "meters", type: "circle", source: "meters", layout: { visibility: "none" },
-    paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 13, 2, 17, 5], "circle-color": "#ffffff",
-      "circle-stroke-color": "#3ea8ff", "circle-stroke-width": 2 } }, "road-label");
-
   buildLegend();
   loadPolicies().then(() => refreshViewport());
   map.on("moveend", refreshViewport);
@@ -88,7 +109,7 @@ async function loadPolicies() {
 function tileKey(b) { return b.map((n) => n.toFixed(2)).join(","); }
 
 async function refreshViewport() {
-  if (map.getZoom() < 12.5) { status("Zoom in to load curb zones", "muted"); return; }
+  if (map.getZoom() < OVERVIEW_ZOOM) return loadCity();
   const b = map.getBounds();
   // snap to 0.01° grid so repeated pans reuse cached tiles
   const g = 0.01, f = (n) => Math.floor(n / g) * g, c = (n) => Math.ceil(n / g) * g;
@@ -128,6 +149,35 @@ async function refreshViewport() {
   repaint();
 }
 
+// Citywide overview: one lite fetch (ids + policy ids + rounded coords), cached at the edge.
+async function loadCity() {
+  if (cityLoaded) { repaint(); return; }
+  cityLoaded = true;
+  status("Loading the whole city…", "busy");
+  try {
+    const r = await fetch(`/api/zones?bbox=${CITY_BBOX.join(",")}&lite=1`);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `zones ${r.status}`);
+    const fc = await r.json();
+    for (const ft of fc.features) {
+      const id = ft.properties.curb_zone_id || ft.id;
+      ft.id = id; ft.properties.curb_zone_id = id;
+      if (!zones.has(id)) zones.set(id, ft); // never downgrade a full-detail zone to lite
+    }
+    status(`${zones.size.toLocaleString()} curb zones citywide · updated ${fc.meta?.last_updated ? new Date(fc.meta.last_updated).toLocaleDateString() : "—"}`, "ok");
+  } catch (e) {
+    cityLoaded = false;
+    console.error(e);
+    if (!zones.size) {
+      demoMode = true;
+      policies = { ...DEMO_POLICIES, ...policies };
+      for (const ft of DEMO_ZONES.features) { ft.id = ft.properties.curb_zone_id; zones.set(ft.id, ft); }
+      status(`City API unreachable (${e.message}). Showing demo curbs in Back Bay.`, "warn");
+      map.flyTo({ center: [-71.081, 42.351], zoom: 16 });
+    } else status(`Couldn't load the overview: ${e.message}`, "warn");
+  }
+  repaint();
+}
+
 function repaint() {
   const minute = hour * 60;
   const features = [];
@@ -145,6 +195,7 @@ async function loadMeters() {
     const r = await fetch("/api/meters");
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `meters ${r.status}`);
     const fc = await r.json();
+    metersData = fc;
     map.getSource("meters").setData(fc);
     status(`${fc.features.length.toLocaleString()} meters loaded`, "ok");
   } catch (e) { status(`Meters unavailable: ${e.message}`, "warn"); }
@@ -171,15 +222,23 @@ function syncTime() { $("#hourLabel").value = hourLabel(hour); $("#day").value =
 $("#hour").addEventListener("input", (e) => { hour = +e.target.value; syncTime(); });
 $("#day").addEventListener("change", (e) => { day = e.target.value; syncTime(); });
 $("#nowBtn").addEventListener("click", () => { day = dayKey(); hour = new Date().getHours(); syncTime(); });
-$("#showMeters").addEventListener("change", (e) => {
-  for (const id of ["meters", "meters-glow"]) map.setLayoutProperty(id, "visibility", e.target.checked ? "visible" : "none");
-  if (e.target.checked && !map.getSource("meters")._data?.features?.length) loadMeters();
-});
-$("#showLabels").addEventListener("change", (e) => { for (const id of ["road-label", "place-neighbourhood", "place-city"]) map.setLayoutProperty(id, "visibility", e.target.checked ? "visible" : "none"); });
+$("#showMeters").addEventListener("change", (e) => { applyLayerToggles(); if (e.target.checked && !metersData) loadMeters(); });
+$("#showLabels").addEventListener("change", applyLayerToggles);
 $("#show3d").addEventListener("change", (e) => {
-  map.setLayoutProperty("buildings-3d", "visibility", e.target.checked ? "visible" : "none");
-  map.easeTo({ pitch: e.target.checked ? 58 : 0, bearing: e.target.checked ? -17 : 0, duration: 600 });
+  applyLayerToggles();
+  autoTilt = e.target.checked;
+  map.easeTo({ pitch: e.target.checked && map.getZoom() >= 14 ? 55 : 0, duration: 600 });
 });
+function setTheme(t) {
+  theme = t;
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem("theme", t); } catch {}
+  $("#themeBtn").textContent = t === "dark" ? "Light" : "Dark";
+  $("#themeBtn").setAttribute("aria-label", `Switch to ${t === "dark" ? "light" : "dark"} mode`);
+  map.setStyle(buildStyle(t, { colorExpr, hoverExpr }), { diff: true });
+}
+$("#themeBtn").addEventListener("click", () => setTheme(theme === "dark" ? "light" : "dark"));
+$("#themeBtn").textContent = theme === "dark" ? "Light" : "Dark";
 $("#panelToggle").addEventListener("click", () => $("#panel").classList.toggle("collapsed"));
 syncTime();
 

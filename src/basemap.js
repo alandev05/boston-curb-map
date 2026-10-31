@@ -1,77 +1,96 @@
-// Dark "look under the city" basemap: OpenMapTiles-schema vector tiles from OpenFreeMap
-// (free, no key) with 3D extruded buildings, dim streets, and light labels.
-// Curb lines are added on top by main.js so they thread between the towers.
+// Basemap + overlay style, built per theme so the whole map can switch with map.setStyle(diff).
+// Vector tiles: OpenFreeMap (OpenMapTiles schema, free, no key). 3D buildings extrude by height.
+// Curb lines are part of the style so they survive theme switches.
 
 export const OFM_TILES = "https://tiles.openfreemap.org/planet";
 export const OFM_GLYPHS = "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf";
 
-export const PALETTE = {
-  bg: "#0b0d14", water: "#060a14", park: "#0f1a16", road: "#1b2030", roadMajor: "#262c40", roadOutline: "#0b0d14",
-  building: "#2b3040", buildingTop: "#474e63", label: "#c9d1e3", labelHalo: "#0b0d14",
+export const PALETTES = {
+  dark: {
+    bg: "#0d0f14", water: "#07090f", park: "#111a16", road: "#1a1e2a", roadMajor: "#242938", roadOutline: "#0d0f14",
+    building: "#262b38", buildingMid: "#353b4b", buildingTop: "#4a5162", label: "#c3c9d6", labelMuted: "#7b8294", halo: "#0d0f14",
+    glowOpacity: 0.55, core: "#ffffff", fillOpacity: 0.25,
+  },
+  light: {
+    bg: "#eef0f3", water: "#cfd9e6", park: "#dde7dc", road: "#ffffff", roadMajor: "#ffffff", roadOutline: "#d7dbe2",
+    building: "#d6d9e0", buildingMid: "#e2e5eb", buildingTop: "#f1f2f5", label: "#2b303c", labelMuted: "#6b7282", halo: "#eef0f3",
+    glowOpacity: 0.3, core: "#ffffff", fillOpacity: 0.3,
+  },
 };
 
 const FONT = ["Noto Sans Regular"];
 const FONT_BOLD = ["Noto Sans Bold"];
+const Z = (...stops) => ["interpolate", ["exponential", 1.4], ["zoom"], ...stops];
 
-export function darkStyle() {
+export function buildStyle(theme, { colorExpr, hoverExpr } = {}) {
+  const P = PALETTES[theme] || PALETTES.dark;
+  colorExpr = colorExpr || "#888";
+  hoverExpr = hoverExpr || ["boolean", ["feature-state", "hover"], false];
   return {
     version: 8,
     glyphs: OFM_GLYPHS,
-    sources: { omt: { type: "vector", url: OFM_TILES, attribution: "© OpenStreetMap contributors, © OpenFreeMap" } },
+    sources: {
+      omt: { type: "vector", url: OFM_TILES, attribution: "© OpenStreetMap contributors, © OpenFreeMap" },
+      zones: { type: "geojson", data: { type: "FeatureCollection", features: [] }, promoteId: "curb_zone_id" },
+      meters: { type: "geojson", data: { type: "FeatureCollection", features: [] } },
+    },
     layers: [
-      { id: "bg", type: "background", paint: { "background-color": PALETTE.bg } },
-      { id: "park", type: "fill", source: "omt", "source-layer": "park", paint: { "fill-color": PALETTE.park } },
-      { id: "landuse-green", type: "fill", source: "omt", "source-layer": "landuse", filter: ["in", "class", "grass", "cemetery", "wood", "pitch", "playground"], paint: { "fill-color": PALETTE.park, "fill-opacity": 0.7 } },
-      { id: "water", type: "fill", source: "omt", "source-layer": "water", paint: { "fill-color": PALETTE.water } },
-      { id: "waterway", type: "line", source: "omt", "source-layer": "waterway", paint: { "line-color": PALETTE.water, "line-width": 1.5 } },
+      { id: "bg", type: "background", paint: { "background-color": P.bg } },
+      { id: "park", type: "fill", source: "omt", "source-layer": "park", paint: { "fill-color": P.park } },
+      { id: "landuse-green", type: "fill", source: "omt", "source-layer": "landuse", filter: ["in", "class", "grass", "cemetery", "wood", "pitch", "playground"], paint: { "fill-color": P.park, "fill-opacity": 0.7 } },
+      { id: "water", type: "fill", source: "omt", "source-layer": "water", paint: { "fill-color": P.water } },
+      { id: "waterway", type: "line", source: "omt", "source-layer": "waterway", paint: { "line-color": P.water, "line-width": 1.5 } },
 
-      // Streets: a dark slab with a slightly lighter core so the grid reads at a tilt.
-      { id: "road-outline", type: "line", source: "omt", "source-layer": "transportation", minzoom: 12,
+      // Streets, visible from city scale down to the block.
+      { id: "road-outline", type: "line", source: "omt", "source-layer": "transportation", minzoom: 11,
         filter: ["!in", "class", "path", "rail", "transit", "ferry"], layout: { "line-cap": "round", "line-join": "round" },
-        paint: { "line-color": PALETTE.roadOutline, "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 12, 1.5, 16, 10, 19, 36] } },
-      { id: "road-minor", type: "line", source: "omt", "source-layer": "transportation", minzoom: 12,
-        filter: ["all", ["!in", "class", "path", "rail", "transit", "ferry", "motorway", "trunk", "primary", "secondary"]],
+        paint: { "line-color": P.roadOutline, "line-width": Z(11, 0.8, 14, 2.5, 16, 10, 19, 36) } },
+      { id: "road-minor", type: "line", source: "omt", "source-layer": "transportation", minzoom: 11,
+        filter: ["!in", "class", "path", "rail", "transit", "ferry", "motorway", "trunk", "primary", "secondary"],
         layout: { "line-cap": "round", "line-join": "round" },
-        paint: { "line-color": PALETTE.road, "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 12, 0.6, 16, 6, 19, 26] } },
+        paint: { "line-color": P.road, "line-width": Z(11, 0.3, 14, 1.2, 16, 6, 19, 26) } },
       { id: "road-major", type: "line", source: "omt", "source-layer": "transportation",
         filter: ["in", "class", "motorway", "trunk", "primary", "secondary"], layout: { "line-cap": "round", "line-join": "round" },
-        paint: { "line-color": PALETTE.roadMajor, "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 10, 0.8, 16, 8, 19, 30] } },
-      { id: "rail", type: "line", source: "omt", "source-layer": "transportation", filter: ["==", "class", "rail"],
-        paint: { "line-color": "#1a1f2c", "line-width": 1, "line-dasharray": [3, 3] } },
+        paint: { "line-color": P.roadMajor, "line-width": Z(9, 0.5, 14, 2.5, 16, 8, 19, 30) } },
+      { id: "rail", type: "line", source: "omt", "source-layer": "transportation", filter: ["==", "class", "rail"], minzoom: 12,
+        paint: { "line-color": P.roadOutline, "line-width": 1, "line-dasharray": [3, 3] } },
 
-      // The city: extruded buildings, lighter at the top so towers catch "light".
-      { id: "buildings-3d", type: "fill-extrusion", source: "omt", "source-layer": "building", minzoom: 13,
+      // The city: extruded buildings grow in as you zoom past z13 (flat footprints at city scale).
+      { id: "buildings-3d", type: "fill-extrusion", source: "omt", "source-layer": "building", minzoom: 12.5,
         paint: {
-          "fill-extrusion-color": ["interpolate", ["linear"], ["coalesce", ["get", "render_height"], 10], 0, PALETTE.building, 60, "#3a4154", 150, PALETTE.buildingTop],
-          "fill-extrusion-height": ["interpolate", ["linear"], ["zoom"], 13, 0, 14.5, ["coalesce", ["get", "render_height"], 10]],
-          "fill-extrusion-base": ["interpolate", ["linear"], ["zoom"], 13, 0, 14.5, ["coalesce", ["get", "render_min_height"], 0]],
+          "fill-extrusion-color": ["interpolate", ["linear"], ["coalesce", ["get", "render_height"], 10], 0, P.building, 60, P.buildingMid, 150, P.buildingTop],
+          "fill-extrusion-height": ["interpolate", ["linear"], ["zoom"], 13, 0, 14.8, ["coalesce", ["get", "render_height"], 10]],
+          "fill-extrusion-base": ["interpolate", ["linear"], ["zoom"], 13, 0, 14.8, ["coalesce", ["get", "render_min_height"], 0]],
           "fill-extrusion-opacity": 0.92, "fill-extrusion-vertical-gradient": true,
         } },
 
-      // Labels
+      // Curb lines: soft halo → colored line → thin bright core. Thin and bright at city scale, chunky up close.
+      { id: "zone-fill", type: "fill", source: "zones", filter: ["==", ["geometry-type"], "Polygon"], paint: { "fill-color": colorExpr, "fill-opacity": P.fillOpacity } },
+      { id: "zone-glow", type: "line", source: "zones", layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": colorExpr, "line-width": Z(9, 2, 13, 5, 16, 16, 19, 34), "line-blur": Z(9, 2, 13, 4, 16, 12, 19, 24), "line-opacity": ["case", hoverExpr, 0.95, P.glowOpacity] } },
+      { id: "zone-line", type: "line", source: "zones", layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": colorExpr, "line-width": Z(9, 0.6, 13, 1.6, 16, 5, 19, 11), "line-opacity": 1 } },
+      { id: "zone-core", type: "line", source: "zones", layout: { "line-cap": "round", "line-join": "round" }, minzoom: 15,
+        paint: { "line-color": P.core, "line-width": Z(15, 0.6, 19, 3.5), "line-opacity": ["interpolate", ["linear"], ["zoom"], 15, 0, 17, 0.75] } },
+
+      { id: "meters-glow", type: "circle", source: "meters", layout: { visibility: "none" },
+        paint: { "circle-radius": Z(13, 5, 17, 14), "circle-color": "#3ea8ff", "circle-blur": 1, "circle-opacity": P.glowOpacity } },
+      { id: "meters", type: "circle", source: "meters", layout: { visibility: "none" },
+        paint: { "circle-radius": Z(13, 2, 17, 5), "circle-color": P.core, "circle-stroke-color": "#3ea8ff", "circle-stroke-width": 2 } },
+
+      // Labels on top of everything.
       { id: "road-label", type: "symbol", source: "omt", "source-layer": "transportation_name", minzoom: 14,
         layout: { "symbol-placement": "line", "text-field": ["coalesce", ["get", "name:en"], ["get", "name"]], "text-font": FONT, "text-size": ["interpolate", ["linear"], ["zoom"], 14, 10, 18, 14], "text-letter-spacing": 0.05, "symbol-spacing": 350 },
-        paint: { "text-color": PALETTE.label, "text-halo-color": PALETTE.labelHalo, "text-halo-width": 1.6, "text-opacity": 0.9 } },
-      { id: "place-neighbourhood", type: "symbol", source: "omt", "source-layer": "place", filter: ["in", "class", "neighbourhood", "suburb", "quarter"],
+        paint: { "text-color": P.label, "text-halo-color": P.halo, "text-halo-width": 1.6, "text-opacity": 0.9 } },
+      { id: "place-neighbourhood", type: "symbol", source: "omt", "source-layer": "place", filter: ["in", "class", "neighbourhood", "suburb", "quarter"], minzoom: 12,
         layout: { "text-field": ["coalesce", ["get", "name:en"], ["get", "name"]], "text-font": FONT, "text-size": 11, "text-transform": "uppercase", "text-letter-spacing": 0.25 },
-        paint: { "text-color": "#8a93a8", "text-halo-color": PALETTE.labelHalo, "text-halo-width": 1.2 } },
+        paint: { "text-color": P.labelMuted, "text-halo-color": P.halo, "text-halo-width": 1.2 } },
       { id: "place-city", type: "symbol", source: "omt", "source-layer": "place", filter: ["in", "class", "city", "town"], maxzoom: 14,
         layout: { "text-field": ["coalesce", ["get", "name:en"], ["get", "name"]], "text-font": FONT_BOLD, "text-size": 14, "text-letter-spacing": 0.2 },
-        paint: { "text-color": PALETTE.label, "text-halo-color": PALETTE.labelHalo, "text-halo-width": 1.5 } },
+        paint: { "text-color": P.label, "text-halo-color": P.halo, "text-halo-width": 1.5 } },
     ],
   };
 }
 
-// Glow treatment for curb lines, layered: wide soft halo → crisp colored line → thin bright core.
-export function glowLayers(colorExpr, hoverExpr) {
-  const w = (z12, z16, z19) => ["interpolate", ["exponential", 1.3], ["zoom"], 12, z12, 16, z16, 19, z19];
-  return [
-    { id: "zone-fill", type: "fill", source: "zones", filter: ["==", ["geometry-type"], "Polygon"], paint: { "fill-color": colorExpr, "fill-opacity": 0.25 } },
-    { id: "zone-glow", type: "line", source: "zones", layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": colorExpr, "line-width": w(6, 16, 34), "line-blur": w(5, 12, 24), "line-opacity": ["case", hoverExpr, 0.95, 0.55] } },
-    { id: "zone-line", type: "line", source: "zones", layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": colorExpr, "line-width": w(1.8, 5, 11), "line-opacity": 1 } },
-    { id: "zone-core", type: "line", source: "zones", layout: { "line-cap": "round", "line-join": "round" }, minzoom: 15,
-      paint: { "line-color": "#ffffff", "line-width": w(0.4, 1.4, 3.5), "line-opacity": ["interpolate", ["linear"], ["zoom"], 15, 0, 17, 0.75] } },
-  ];
-}
+export const LABEL_LAYERS = ["road-label", "place-neighbourhood", "place-city"];
+export const METER_LAYERS = ["meters", "meters-glow"];

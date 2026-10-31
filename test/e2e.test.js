@@ -74,6 +74,14 @@ describe("/api/zones over HTTP", () => {
     expect(ids.size).toBe(fc.features.length); // no dupes across pages
   });
 
+  it("citywide lite overview returns every zone, small", async () => {
+    const r = await fetch(`${base}/api/zones?bbox=-71.1912,42.2279,-70.9860,42.3969&lite=1`);
+    const text = await r.text(); const fc = JSON.parse(text);
+    expect(fc.features.length).toBeGreaterThan(4000);
+    expect(text.length / fc.features.length).toBeLessThan(300); // bytes per zone
+    expect(fc.features[0].properties.published_date).toBeUndefined();
+  });
+
   it("400s on bad bbox, 404s on unknown route", async () => {
     expect((await fetch(`${base}/api/zones?bbox=nope`)).status).toBe(400);
     expect((await fetch(`${base}/api/nothing`)).status).toBe(404);
@@ -149,7 +157,7 @@ describe("Accept-header fallback (strict mock)", () => {
 describe.skipIf(!hasDist)("built front-end is served", () => {
   it("index.html and the JS/CSS bundle load", async () => {
     const html = await (await fetch(`${base}/`)).text();
-    expect(html).toMatch(/Curb Cartoon/);
+    expect(html).toMatch(/Curb parking rules/);
     const js = html.match(/src="(\/assets\/[^"]+\.js)"/)[1];
     const css = html.match(/href="(\/assets\/[^"]+\.css)"/)[1];
     const jr = await fetch(base + js); expect(jr.status).toBe(200); expect(jr.headers.get("content-type")).toMatch(/javascript/);
@@ -157,9 +165,12 @@ describe.skipIf(!hasDist)("built front-end is served", () => {
     expect(bundle).toMatch(/\/api\/zones\?bbox=/); // front-end actually calls our API
     expect(bundle).toMatch(/tiles\.openfreemap\.org/);
     expect(bundle).toMatch(/fill-extrusion-height/); // 3D buildings present
+    expect(bundle).toMatch(/lite=1/); // citywide overview wired up
+    expect(html).not.toMatch(/fonts\.googleapis/); // system font only
+    expect(html).toMatch(/dataset\.theme/); // theme bootstrapped before paint
     expect((await fetch(base + css)).status).toBe(200);
   });
   it("unknown paths fall back to index.html (SPA)", async () => {
-    expect(await (await fetch(`${base}/some/deep/link`)).text()).toMatch(/Curb Cartoon/);
+    expect(await (await fetch(`${base}/some/deep/link`)).text()).toMatch(/Curb parking rules/);
   });
 });

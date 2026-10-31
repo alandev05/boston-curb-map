@@ -1,9 +1,11 @@
-# Curb Cartoon 🅿️
+# Boston curb parking rules
 
-![Curb Cartoon preview](docs/preview-desktop.png)
+![Dark, block scale](docs/preview-desktop.png)
+![Citywide overview](docs/preview-city.png)
+![Light mode](docs/preview-light.png)
 *Preview shot against the mock city API with stand-in buildings; live, the towers are real OpenFreeMap footprints with heights and the curb lines follow actual street edges.*
 
-An interactive, slightly cartoony map of **every curb in Boston and the parking rule that applies** — right now, or at any day/hour you pick.
+An interactive 3D map of **every curb in Boston and the parking rule that applies** — right now, or at any day/hour you pick.
 
 Live data comes from the City of Boston's [Curb Lab](https://www.boston.gov/curb-lab), which publishes a public [Curb Data Specification](https://github.com/openmobilityfoundation/curb-data-specification) (CDS) feed at `https://cds-curb-api.boston.gov`. Parking meter points come from [Analyze Boston](https://data.boston.gov).
 
@@ -17,7 +19,7 @@ browser ──/api/zones?bbox=…──▶ Vercel function ──▶ cds-curb-ap
         ──/api/meters────────▶ Vercel function ──▶ data.boston.gov CKAN datastore
 ```
 
-* **Zones** are fetched per viewport (zoom ≥ 12.5) and cached client-side; the serverless proxy adds an edge cache so the city API isn't hammered.
+* **Zones**: below z13 one citywide `lite=1` fetch (ids + policy ids, 5-dp coords, 6 h edge cache) draws the whole city; above it, per-viewport full-detail fetches. Both are cached client-side; the serverless proxy adds an edge cache so the city API isn't hammered.
 * **Policies** are resolved client-side in `src/rules.js`: for the chosen day + hour, every policy attached to a zone is checked against its CDS `time_spans`; the lowest `priority` number wins (CDS precedence), and its first rule is bucketed into a colour category (no stopping, no parking, travel lane, loading, paid, resident, accessible, free).
 * If the city API is unreachable the map falls back to a few hand-made demo curbs in Back Bay and says so in the status chip.
 
@@ -56,7 +58,7 @@ index.html  Panel + legend + time picker
 ## Testing
 
 ```bash
-npm test          # builds, then 69 tests: rule engine, API handlers (mocked fetch), HTTP end-to-end
+npm test          # builds, then 90 tests: rule engine, API handlers (mocked fetch), HTTP end-to-end
 npm run test:unit # just the fast ones
 ```
 
@@ -73,3 +75,7 @@ npm run dev:local        # http://localhost:3000
 # or against the real city API:
 npm run build && npm run serve
 ```
+
+## Themes
+
+Dark by default (or follows `prefers-color-scheme`); the toggle persists in `localStorage`. Both themes share one layer list so `map.setStyle(…, { diff: true })` swaps paint in place. UI uses the system font stack (Helvetica Neue / Segoe / Roboto) — no web fonts, no logos.

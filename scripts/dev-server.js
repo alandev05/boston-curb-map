@@ -31,7 +31,9 @@ async function serveStatic(res, urlPath) {
   try { if ((await stat(p)).isDirectory()) p = path.join(p, "index.html"); } catch { p = path.join(root, "dist", "index.html"); }
   try {
     const body = await readFile(p);
-    res.writeHead(200, { "Content-Type": MIME[path.extname(p)] || "application/octet-stream" });
+    const headers = { "Content-Type": MIME[path.extname(p)] || "application/octet-stream" };
+    if (p.endsWith(".pbf")) Object.assign(headers, { "Content-Type": "application/x-protobuf", "Content-Encoding": "gzip", "Cache-Control": "public, max-age=86400" });
+    res.writeHead(200, headers);
     res.end(body);
   } catch {
     res.writeHead(404, { "Content-Type": "text/plain" }); res.end("not found (run `npm run build` first)");

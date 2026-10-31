@@ -22,16 +22,25 @@ const FONT = ["Noto Sans Regular"];
 const FONT_BOLD = ["Noto Sans Bold"];
 const Z = (...stops) => ["interpolate", ["exponential", 1.4], ["zoom"], ...stops];
 
-export function buildStyle(theme, { colorExpr, hoverExpr } = {}) {
+// `tiles` (optional): { url, minzoom, maxzoom, bounds } → curb layers read static vector tiles (source-layer "curbs")
+// instead of the runtime GeoJSON source. Layer ids are identical either way so the UI code doesn't care.
+export function buildStyle(theme, { colorExpr, hoverExpr, tiles, filter } = {}) {
   const P = PALETTES[theme] || PALETTES.dark;
   colorExpr = colorExpr || "#888";
   hoverExpr = hoverExpr || ["boolean", ["feature-state", "hover"], false];
+  const curb = tiles ? { source: "curbs", "source-layer": "curbs" } : { source: "zones" };
+  const curbSource = tiles
+    ? { curbs: { type: "vector", tiles: [tiles.url], minzoom: tiles.minzoom, maxzoom: tiles.maxzoom, bounds: tiles.bounds, promoteId: { curbs: "id" } } }
+    : { zones: { type: "geojson", data: { type: "FeatureCollection", features: [] }, promoteId: "curb_zone_id" } };
+  // Meters: a point layer inside the same tiles when the build included them, else the runtime GeoJSON source.
+  const meter = tiles?.meters ? { source: "curbs", "source-layer": "meters" } : { source: "meters" };
+  const withFilter = (f) => (filter ? ["all", f, filter] : f);
   return {
     version: 8,
     glyphs: OFM_GLYPHS,
     sources: {
       omt: { type: "vector", url: OFM_TILES, attribution: "© OpenStreetMap contributors, © OpenFreeMap" },
-      zones: { type: "geojson", data: { type: "FeatureCollection", features: [] }, promoteId: "curb_zone_id" },
+      ...curbSource,
       meters: { type: "geojson", data: { type: "FeatureCollection", features: [] } },
     },
     layers: [
@@ -65,17 +74,17 @@ export function buildStyle(theme, { colorExpr, hoverExpr } = {}) {
         } },
 
       // Curb lines: soft halo → colored line → thin bright core. Thin and bright at city scale, chunky up close.
-      { id: "zone-fill", type: "fill", source: "zones", filter: ["==", ["geometry-type"], "Polygon"], paint: { "fill-color": colorExpr, "fill-opacity": P.fillOpacity } },
-      { id: "zone-glow", type: "line", source: "zones", layout: { "line-cap": "round", "line-join": "round" },
+      { id: "zone-fill", type: "fill", ...curb, filter: withFilter(["==", ["geometry-type"], "Polygon"]), paint: { "fill-color": colorExpr, "fill-opacity": P.fillOpacity } },
+      { id: "zone-glow", type: "line", ...curb, ...(filter ? { filter } : {}), layout: { "line-cap": "round", "line-join": "round" },
         paint: { "line-color": colorExpr, "line-width": Z(9, 2, 13, 5, 16, 16, 19, 34), "line-blur": Z(9, 2, 13, 4, 16, 12, 19, 24), "line-opacity": ["case", hoverExpr, 0.95, P.glowOpacity] } },
-      { id: "zone-line", type: "line", source: "zones", layout: { "line-cap": "round", "line-join": "round" },
+      { id: "zone-line", type: "line", ...curb, ...(filter ? { filter } : {}), layout: { "line-cap": "round", "line-join": "round" },
         paint: { "line-color": colorExpr, "line-width": Z(9, 0.6, 13, 1.6, 16, 5, 19, 11), "line-opacity": 1 } },
-      { id: "zone-core", type: "line", source: "zones", layout: { "line-cap": "round", "line-join": "round" }, minzoom: 15,
+      { id: "zone-core", type: "line", ...curb, ...(filter ? { filter } : {}), layout: { "line-cap": "round", "line-join": "round" }, minzoom: 15,
         paint: { "line-color": P.core, "line-width": Z(15, 0.6, 19, 3.5), "line-opacity": ["interpolate", ["linear"], ["zoom"], 15, 0, 17, 0.75] } },
 
-      { id: "meters-glow", type: "circle", source: "meters", layout: { visibility: "none" },
+      { id: "meters-glow", type: "circle", ...meter, layout: { visibility: "none" },
         paint: { "circle-radius": Z(13, 5, 17, 14), "circle-color": "#3ea8ff", "circle-blur": 1, "circle-opacity": P.glowOpacity } },
-      { id: "meters", type: "circle", source: "meters", layout: { visibility: "none" },
+      { id: "meters", type: "circle", ...meter, layout: { visibility: "none" },
         paint: { "circle-radius": Z(13, 2, 17, 5), "circle-color": P.core, "circle-stroke-color": "#3ea8ff", "circle-stroke-width": 2 } },
 
       // Labels on top of everything.
@@ -92,5 +101,6 @@ export function buildStyle(theme, { colorExpr, hoverExpr } = {}) {
   };
 }
 
+export const CURB_LAYERS = ["zone-fill", "zone-glow", "zone-line", "zone-core"];
 export const LABEL_LAYERS = ["road-label", "place-neighbourhood", "place-city"];
 export const METER_LAYERS = ["meters", "meters-glow"];

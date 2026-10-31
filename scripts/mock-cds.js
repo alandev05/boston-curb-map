@@ -99,6 +99,15 @@ export function createMock() {
     }
     if (url.pathname === "/openapi.json") return json(200, { openapi: "3.0.0", info: { title: "Mock CDS", version: "1.0" }, paths: { "/curbs/zones": {}, "/curbs/policies": {} } });
 
+    // ArcGIS Hub v3 item → FeatureServer layer, and the layer's /query (GeoJSON, paged)
+    if (url.pathname.startsWith("/api/v3/datasets/")) return json(200, { data: { id: url.pathname.split("/").pop(), attributes: { url: `http://localhost:${PORT}/arcgis/rest/services/Parking_Meters/FeatureServer/0`, recordCount: METERS.length, fields: [{ name: "METER_ID" }, { name: "STREET" }] } } });
+    if (url.pathname.endsWith("/FeatureServer/0/query")) {
+      const n = Number(url.searchParams.get("resultRecordCount") || 2000), off = Number(url.searchParams.get("resultOffset") || 0);
+      if (url.searchParams.get("f") !== "geojson") return json(400, { error: { message: "f=geojson expected" } });
+      const page = METERS.slice(off, off + n).map((m) => ({ type: "Feature", geometry: { type: "Point", coordinates: [Number(m.LONGITUDE), Number(m.LATITUDE)] }, properties: { OBJECTID: m._id, METER_ID: m.METER_ID, STREET: m.STREET, PAY_POLICY: "2HR $3.75", VENDOR: "IPS", SHAPE_LENGTH: 0 } }));
+      return json(200, { type: "FeatureCollection", features: page, properties: { exceededTransferLimit: off + n < METERS.length } });
+    }
+
     // CKAN sliver
     if (url.pathname.endsWith("/package_search")) return json(200, { success: true, result: { results: [
       { title: "Parking Tickets", resources: [] },

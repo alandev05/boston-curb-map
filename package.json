@@ -5,19 +5,27 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npm run data && vite build",
     "preview": "vite preview",
-    "test": "npm run build && vitest run",
+    "test": "npm run build:site && vitest run",
     "test:watch": "vitest",
     "serve": "node scripts/dev-server.js",
     "mock": "node scripts/mock-cds.js --port 4321",
-    "dev:local": "npm run build && CDS_BASE=http://localhost:4321 CKAN_BASE=http://localhost:4321 node scripts/dev-server.js",
-    "test:unit": "vitest run test/rules.test.js test/api.test.js"
+    "dev:local": "npm run build:site && CDS_BASE=http://localhost:4321 CKAN_BASE=http://localhost:4321 node scripts/dev-server.js",
+    "test:unit": "vitest run test/rules.test.js test/api.test.js",
+    "data": "node scripts/data.js",
+    "data:offline": "node scripts/data.js --offline",
+    "data:mock": "CDS_BASE=http://localhost:4321 RPS=200 node scripts/data.js",
+    "build:site": "vite build"
   },
   "dependencies": {
-    "maplibre-gl": "^4.7.1"
+    "geojson-vt": "^4.0.3",
+    "maplibre-gl": "^4.7.1",
+    "vt-pbf": "^3.1.3"
   },
   "devDependencies": {
+    "@mapbox/vector-tile": "^2.0.5",
+    "pbf": "^4.0.2",
     "vite": "^5.4.11",
     "vitest": "^2.1.9"
   }

@@ -1,0 +1,14 @@
+# Nightly data refresh: tiles are built at deploy time (npm run build → scripts/data.js),
+# so a redeploy = fresh curb data. Add a Vercel Deploy Hook URL as the VERCEL_DEPLOY_HOOK secret.
+name: Nightly rebuild
+on:
+  schedule:
+    - cron: "17 8 * * *"   # 08:17 UTC ≈ 4:17 AM Boston
+  workflow_dispatch:
+jobs:
+  redeploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Vercel deploy hook
+        if: ${{ secrets.VERCEL_DEPLOY_HOOK != '' }}
+        run: curl -sS -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"

@@ -3,25 +3,29 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import "./style.css";
 import { CATEGORIES, verdict, fmtRate, fmtSpan, dayKey, policyActive } from "./rules.js";
 import { DEMO_ZONES, DEMO_POLICIES } from "./demo.js";
-import { buildStyle, LABEL_LAYERS, METER_LAYERS } from "./basemap.js";
+import { buildStyle, LABEL_LAYERS, METER_LAYERS, CURB_LAYERS } from "./basemap.js";
+import { CODES, CATEGORY_OF, slotIndex, codeAt } from "./schedule.js";
 
 const $ = (s) => document.querySelector(s);
 const status = (msg, kind = "") => { const el = $("#status"); el.textContent = msg; el.className = `status ${kind}`; };
 
 // ---------- state ----------
-const zones = new Map();          // curb_zone_id -> Feature
 let policies = {};                 // curb_policy_id -> policy
-let demoMode = false;
 const hidden = new Set();          // hidden categories
 let day = dayKey(), hour = new Date().getHours();
+let demoMode = false;
+
+// Data mode. "tiles": prebuilt static vector tiles (scripts/build-tiles.js) — the fast path.
+// "api": runtime GeoJSON from /api/zones — fallback when no tiles have been built.
+let mode = "api";
+let manifest = null;
+const zones = new Map();           // api mode: curb_zone_id -> Feature
 const fetchedTiles = new Set();
-let cityLoaded = false;            // citywide overview fetched once
+let cityLoaded = false;
 const CITY_BBOX = [-71.1912, 42.2279, -70.9860, 42.3969];
-const OVERVIEW_ZOOM = 13.2;        // below this: one citywide (lite) fetch; above: per-viewport fetches
+const OVERVIEW_ZOOM = 13.2;
 
 // ---------- theme ----------
-const colorExpr = ["match", ["get", "cat"], ...Object.entries(CATEGORIES).flatMap(([k, v]) => [k, v.color]), "#7b8294"];
-const hoverExpr = ["boolean", ["feature-state", "hover"], false];
 function savedTheme() {
   try { const t = localStorage.getItem("theme"); if (t === "light" || t === "dark") return t; } catch {}
   return matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
@@ -29,7 +33,39 @@ function savedTheme() {
 let theme = savedTheme();
 document.documentElement.dataset.theme = theme;
 
-// ---------- map ----------
+// ---------- color expressions ----------
+// api mode: features carry `cat` (recomputed in JS on every time change).
+// tiles mode: features carry `sched` (168-char weekly schedule) — color is a GPU-side string slice.
+const hoverExpr = ["boolean", ["feature-state", "hover"], false];
+const catColors = Object.entries(CATEGORIES).flatMap(([k, v]) => [k, v.color]);
+const codeColors = Object.entries(CATEGORIES).flatMap(([k, v]) => [CODES[k], v.color]);
+function colorExprFor() {
+  return mode === "tiles" ? ["match", codeAt(slotIndex(day, hour)), ...codeColors, "#7b8294"] : ["match", ["get", "cat"], ...catColors, "#7b8294"];
+}
+function filterExprFor() {
+  if (mode !== "tiles" || !hidden.size) return null;
+  return ["!", ["in", codeAt(slotIndex(day, hour)), ["literal", [...hidden].map((k) => CODES[k])]]];
+}
+function styleOpts() {
+  const tiles = mode === "tiles" && manifest ? { url: location.origin + manifest.tile_url, minzoom: manifest.minzoom, maxzoom: manifest.maxzoom, bounds: manifest.bbox, meters: manifest.meters > 0 } : null;
+  return { colorExpr: colorExprFor(), hoverExpr, tiles, filter: filterExprFor() };
+}
+
+// ---------- boot: decide the data mode before creating the map ----------
+async function detectMode() {
+  try {
+    const r = await fetch("/data/manifest.json", { cache: "no-cache" });
+    if (!r.ok) throw 0;
+    manifest = await r.json();
+    if (!manifest.tiles) throw 0;
+    const pr = await fetch("/data/policies.json");
+    policies = pr.ok ? await pr.json() : {};
+    mode = "tiles";
+  } catch { mode = "api"; }
+}
+
+await detectMode();
+
 const map = new maplibregl.Map({
   container: "map",
   center: [-71.0589, 42.3601],
@@ -41,7 +77,7 @@ const map = new maplibregl.Map({
   maxPitch: 72,
   antialias: true,
   attributionControl: false,
-  style: buildStyle(theme, { colorExpr, hoverExpr }),
+  style: buildStyle(theme, styleOpts()),
 });
 window.__map = map; // handy in devtools / screenshot script
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "bottom-right");
@@ -69,23 +105,29 @@ map.on("zoomend", () => {
   const want = z >= 15 ? 55 : z >= 14 ? 35 : 0;
   if (Math.abs(map.getPitch() - want) > 5) map.easeTo({ pitch: want, duration: 500 });
 });
-map.on("pitchstart", (e) => { if (e.originalEvent) autoTilt = false; }); // user grabbed the pitch → stop auto-tilting
+map.on("pitchstart", (e) => { if (e.originalEvent) autoTilt = false; });
 
 map.on("load", () => {
   buildLegend();
-  loadPolicies().then(() => refreshViewport());
-  map.on("moveend", refreshViewport);
+  if (mode === "tiles") {
+    status(`${manifest.zones.toLocaleString()} curb zones · tiles built ${new Date(manifest.built_at).toLocaleDateString()}`, "ok");
+    map.on("error", (e) => { if (e.sourceId === "curbs" && e.error?.status === 404) status("Tile missing — rebuild with `npm run data`", "warn"); });
+  } else {
+    loadPolicies().then(() => refreshViewport());
+    map.on("moveend", refreshViewport);
+  }
 
   let hoverId = null;
+  const hoverSource = mode === "tiles" ? { source: "curbs", sourceLayer: "curbs" } : { source: "zones" };
   map.on("mousemove", "zone-line", (e) => {
     map.getCanvas().style.cursor = "pointer";
     const id = e.features[0].id;
-    if (hoverId !== null && hoverId !== id) map.setFeatureState({ source: "zones", id: hoverId }, { hover: false });
-    hoverId = id; map.setFeatureState({ source: "zones", id }, { hover: true });
+    if (hoverId !== null && hoverId !== id) map.setFeatureState({ ...hoverSource, id: hoverId }, { hover: false });
+    hoverId = id; map.setFeatureState({ ...hoverSource, id }, { hover: true });
   });
   map.on("mouseleave", "zone-line", () => {
     map.getCanvas().style.cursor = "";
-    if (hoverId !== null) map.setFeatureState({ source: "zones", id: hoverId }, { hover: false });
+    if (hoverId !== null) map.setFeatureState({ ...hoverSource, id: hoverId }, { hover: false });
     hoverId = null;
   });
   map.on("click", "zone-line", (e) => showPopup(e.features[0], e.lngLat));
@@ -93,17 +135,14 @@ map.on("load", () => {
   map.on("click", (e) => { if (!map.queryRenderedFeatures(e.point, { layers: ["zone-line", "zone-fill"] }).length) hidePopup(); });
 });
 
-// ---------- data ----------
+// ---------- api-mode data ----------
 async function loadPolicies() {
   try {
     const r = await fetch("/api/policies");
     if (!r.ok) throw new Error(`policies ${r.status}`);
     policies = await r.json();
     if (!Object.keys(policies).length) throw new Error("policy list empty");
-  } catch (e) {
-    console.warn("policies unavailable, lazy-loading per zone", e);
-    policies = {};
-  }
+  } catch (e) { console.warn("policies unavailable, lazy-loading per zone", e); policies = {}; }
 }
 
 function tileKey(b) { return b.map((n) => n.toFixed(2)).join(","); }
@@ -111,7 +150,6 @@ function tileKey(b) { return b.map((n) => n.toFixed(2)).join(","); }
 async function refreshViewport() {
   if (map.getZoom() < OVERVIEW_ZOOM) return loadCity();
   const b = map.getBounds();
-  // snap to 0.01° grid so repeated pans reuse cached tiles
   const g = 0.01, f = (n) => Math.floor(n / g) * g, c = (n) => Math.ceil(n / g) * g;
   const bbox = [f(b.getWest()), f(b.getSouth()), c(b.getEast()), c(b.getNorth())];
   const key = tileKey(bbox);
@@ -122,34 +160,16 @@ async function refreshViewport() {
     const r = await fetch(`/api/zones?bbox=${bbox.join(",")}`);
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `zones ${r.status}`);
     const fc = await r.json();
-    for (const ft of fc.features) {
-      const id = ft.properties.curb_zone_id || ft.id;
-      ft.id = id; ft.properties.curb_zone_id = id;
-      zones.set(id, ft);
-    }
-    // Any policy ids we don't have yet → fetch in a batch
+    ingest(fc.features, true);
     const missing = new Set();
     for (const ft of fc.features) for (const pid of ft.properties.curb_policy_ids || []) if (!policies[pid]) missing.add(pid);
-    if (missing.size) {
-      const r2 = await fetch(`/api/policies?ids=${[...missing].join(",")}`);
-      if (r2.ok) Object.assign(policies, await r2.json());
-    }
+    if (missing.size) { const r2 = await fetch(`/api/policies?ids=${[...missing].join(",")}`); if (r2.ok) Object.assign(policies, await r2.json()); }
     demoMode = false;
     status(`${zones.size.toLocaleString()} curb zones loaded · updated ${fc.meta?.last_updated ? new Date(fc.meta.last_updated).toLocaleDateString() : "—"}`, "ok");
-  } catch (e) {
-    console.error(e);
-    if (!zones.size) {
-      demoMode = true;
-      policies = { ...DEMO_POLICIES, ...policies };
-      for (const ft of DEMO_ZONES.features) { ft.id = ft.properties.curb_zone_id; zones.set(ft.id, ft); }
-      status(`City API unreachable (${e.message}). Showing demo curbs in Back Bay.`, "warn");
-      map.flyTo({ center: [-71.081, 42.351], zoom: 16 });
-    } else status(`Couldn't load this area: ${e.message}`, "warn");
-  }
+  } catch (e) { onApiError(e, "Couldn't load this area"); }
   repaint();
 }
 
-// Citywide overview: one lite fetch (ids + policy ids + rounded coords), cached at the edge.
 async function loadCity() {
   if (cityLoaded) { repaint(); return; }
   cityLoaded = true;
@@ -158,27 +178,43 @@ async function loadCity() {
     const r = await fetch(`/api/zones?bbox=${CITY_BBOX.join(",")}&lite=1`);
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `zones ${r.status}`);
     const fc = await r.json();
-    for (const ft of fc.features) {
-      const id = ft.properties.curb_zone_id || ft.id;
-      ft.id = id; ft.properties.curb_zone_id = id;
-      if (!zones.has(id)) zones.set(id, ft); // never downgrade a full-detail zone to lite
-    }
+    ingest(fc.features, false);
     status(`${zones.size.toLocaleString()} curb zones citywide · updated ${fc.meta?.last_updated ? new Date(fc.meta.last_updated).toLocaleDateString() : "—"}`, "ok");
-  } catch (e) {
-    cityLoaded = false;
-    console.error(e);
-    if (!zones.size) {
-      demoMode = true;
-      policies = { ...DEMO_POLICIES, ...policies };
-      for (const ft of DEMO_ZONES.features) { ft.id = ft.properties.curb_zone_id; zones.set(ft.id, ft); }
-      status(`City API unreachable (${e.message}). Showing demo curbs in Back Bay.`, "warn");
-      map.flyTo({ center: [-71.081, 42.351], zoom: 16 });
-    } else status(`Couldn't load the overview: ${e.message}`, "warn");
-  }
+  } catch (e) { cityLoaded = false; onApiError(e, "Couldn't load the overview"); }
   repaint();
 }
 
+function ingest(features, overwrite) {
+  for (const ft of features) {
+    const id = ft.properties.curb_zone_id || ft.id;
+    ft.id = id; ft.properties.curb_zone_id = id;
+    if (overwrite || !zones.has(id)) zones.set(id, ft);
+  }
+}
+
+function onApiError(e, what) {
+  console.error(e);
+  if (!zones.size) {
+    demoMode = true;
+    policies = { ...DEMO_POLICIES, ...policies };
+    ingest(DEMO_ZONES.features, true);
+    status(`City API unreachable (${e.message}). Showing demo curbs in Back Bay.`, "warn");
+    map.flyTo({ center: [-71.081, 42.351], zoom: 16 });
+  } else status(`${what}: ${e.message}`, "warn");
+}
+
+// Recolor for the current day/hour + legend toggles.
 function repaint() {
+  if (!map.getLayer("zone-line")) return;
+  if (mode === "tiles") {
+    const color = colorExprFor(), filter = filterExprFor();
+    for (const id of CURB_LAYERS) {
+      map.setPaintProperty(id, id === "zone-fill" ? "fill-color" : "line-color", color);
+      if (id === "zone-fill") map.setFilter(id, filter ? ["all", ["==", ["geometry-type"], "Polygon"], filter] : ["==", ["geometry-type"], "Polygon"]);
+      else map.setFilter(id, filter);
+    }
+    return;
+  }
   const minute = hour * 60;
   const features = [];
   for (const ft of zones.values()) {
@@ -222,7 +258,7 @@ function syncTime() { $("#hourLabel").value = hourLabel(hour); $("#day").value =
 $("#hour").addEventListener("input", (e) => { hour = +e.target.value; syncTime(); });
 $("#day").addEventListener("change", (e) => { day = e.target.value; syncTime(); });
 $("#nowBtn").addEventListener("click", () => { day = dayKey(); hour = new Date().getHours(); syncTime(); });
-$("#showMeters").addEventListener("change", (e) => { applyLayerToggles(); if (e.target.checked && !metersData) loadMeters(); });
+$("#showMeters").addEventListener("change", (e) => { applyLayerToggles(); if (e.target.checked && !metersData && !(mode === "tiles" && manifest.meters > 0)) loadMeters(); });
 $("#showLabels").addEventListener("change", applyLayerToggles);
 $("#show3d").addEventListener("change", (e) => {
   applyLayerToggles();
@@ -235,7 +271,7 @@ function setTheme(t) {
   try { localStorage.setItem("theme", t); } catch {}
   $("#themeBtn").textContent = t === "dark" ? "Light" : "Dark";
   $("#themeBtn").setAttribute("aria-label", `Switch to ${t === "dark" ? "light" : "dark"} mode`);
-  map.setStyle(buildStyle(t, { colorExpr, hoverExpr }), { diff: true });
+  map.setStyle(buildStyle(t, styleOpts()), { diff: true });
 }
 $("#themeBtn").addEventListener("click", () => setTheme(theme === "dark" ? "light" : "dark"));
 $("#themeBtn").textContent = theme === "dark" ? "Light" : "Dark";
@@ -244,11 +280,21 @@ syncTime();
 
 function esc(s) { return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
+// Normalize a clicked feature from either mode into zone props.
+function zoneFromFeature(feature) {
+  if (mode === "tiles") {
+    const p = feature.properties;
+    return { curb_zone_id: p.id, user_zone_id: p.zone, street_name: p.street, street_side: p.side, curb_policy_ids: p.pids ? p.pids.split(",") : [], sched: p.sched };
+  }
+  return zones.get(feature.id)?.properties || feature.properties;
+}
+
 function showPopup(feature, lngLat) {
-  const p = zones.get(feature.id)?.properties || feature.properties;
+  const p = zoneFromFeature(feature);
   const minute = hour * 60;
-  const v = verdict(p, policies, day, minute);
-  const cat = CATEGORIES[v.category];
+  // Prefer the precomputed schedule (it is exactly what's drawn); fall back to live resolution.
+  const category = p.sched ? CATEGORY_OF[p.sched[slotIndex(day, hour)]] || "unknown" : verdict(p, policies, day, minute).category;
+  const cat = CATEGORIES[category];
   const ids = p.curb_policy_ids || [];
   const rows = ids.map((id) => {
     const pol = policies[id]; if (!pol) return `<li class="dim">policy ${esc(id)} (not loaded)</li>`;
@@ -270,7 +316,6 @@ function showPopup(feature, lngLat) {
     <ul class="rules">${rows || "<li class='dim'>No policies attached.</li>"}</ul>`;
   $("#popup").classList.remove("hidden");
   $("#popup .x").onclick = hidePopup;
-  // park the popup near the click, inside the viewport
   const pt = map.project(lngLat);
   const el = $("#popup");
   const W = el.offsetWidth || 300, H = el.offsetHeight || 200;

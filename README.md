@@ -26,7 +26,7 @@ Every curb gets a precomputed **168-character weekly schedule** (`sched`, one le
 
 **Run time**: static files only. The `api/` functions remain as a fallback (`/api/zones`, `/api/policies`, `/api/meters`) and the client uses them automatically when no `manifest.json` exists.
 
-**Freshness**: data is re-fetched on every deploy; `.github/workflows/refresh.yml` hits a Vercel Deploy Hook nightly (set the `VERCEL_DEPLOY_HOOK` secret).
+**Freshness**: data is re-fetched on every deploy. For a nightly refresh, point a Vercel Cron or any scheduler at a Vercel Deploy Hook.
 
 * **Fallback (API) mode**: below z13 one citywide `lite=1` fetch draws the whole city; above it, per-viewport full-detail fetches.
 * **Policies** are resolved client-side in `src/rules.js`: for the chosen day + hour, every policy attached to a zone is checked against its CDS `time_spans`; the lowest `priority` number wins (CDS precedence), and its first rule is bucketed into a colour category (no stopping, no parking, travel lane, loading, paid, resident, accessible, free).

@@ -1,5 +1,8 @@
 # Curb Cartoon 🅿️
 
+![Curb Cartoon preview](docs/preview-desktop.png)
+*Preview shot against the mock city API with a stub basemap; the live site uses CARTO Voyager tiles and Fredoka.*
+
 An interactive, slightly cartoony map of **every curb in Boston and the parking rule that applies** — right now, or at any day/hour you pick.
 
 Live data comes from the City of Boston's [Curb Lab](https://www.boston.gov/curb-lab), which publishes a public [Curb Data Specification](https://github.com/openmobilityfoundation/curb-data-specification) (CDS) feed at `https://cds-curb-api.boston.gov`. Parking meter points come from [Analyze Boston](https://data.boston.gov).

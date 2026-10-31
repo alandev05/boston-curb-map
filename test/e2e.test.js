@@ -155,7 +155,8 @@ describe.skipIf(!hasDist)("built front-end is served", () => {
     const jr = await fetch(base + js); expect(jr.status).toBe(200); expect(jr.headers.get("content-type")).toMatch(/javascript/);
     const bundle = await jr.text();
     expect(bundle).toMatch(/\/api\/zones\?bbox=/); // front-end actually calls our API
-    expect(bundle).toMatch(/basemaps\.cartocdn\.com/);
+    expect(bundle).toMatch(/tiles\.openfreemap\.org/);
+    expect(bundle).toMatch(/fill-extrusion-height/); // 3D buildings present
     expect((await fetch(base + css)).status).toBe(200);
   });
   it("unknown paths fall back to index.html (SPA)", async () => {

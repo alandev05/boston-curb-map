@@ -2,15 +2,15 @@
 // CDS Curbs spec: https://github.com/openmobilityfoundation/curb-data-specification/tree/main/curbs
 
 export const CATEGORIES = {
-  no_stopping: { label: "No stopping", color: "#ff4d6d", blurb: "Don't even pause here." },
-  no_parking:  { label: "No parking",  color: "#ff8c42", blurb: "Drop-off/pick-up only." },
-  travel:      { label: "Travel lane", color: "#6c757d", blurb: "Rush-hour lane — cars get towed." },
-  loading:     { label: "Loading zone", color: "#ffd166", blurb: "Commercial loading only." },
-  paid:        { label: "Paid meter", color: "#4d9fff", blurb: "Feed the meter or ParkBoston app." },
-  resident:    { label: "Resident permit", color: "#b388ff", blurb: "Neighborhood sticker required." },
-  accessible:  { label: "Accessible", color: "#ff7ad9", blurb: "Disability placard only." },
-  free:        { label: "Free / time-limit", color: "#2ec4b6", blurb: "Free, maybe with a time cap." },
-  unknown:     { label: "Unknown", color: "#c9c9c9", blurb: "No policy data for this time." },
+  no_stopping: { label: "No stopping", color: "#ff3b5c", blurb: "Don't even pause here." },
+  no_parking:  { label: "No parking",  color: "#ff9f1c", blurb: "Drop-off/pick-up only." },
+  travel:      { label: "Travel lane", color: "#8d99ae", blurb: "Rush-hour lane — cars get towed." },
+  loading:     { label: "Loading zone", color: "#ffe066", blurb: "Commercial loading only." },
+  paid:        { label: "Paid meter", color: "#3ea8ff", blurb: "Feed the meter or ParkBoston app." },
+  resident:    { label: "Resident permit", color: "#a78bfa", blurb: "Neighborhood sticker required." },
+  accessible:  { label: "Accessible", color: "#ff6ad5", blurb: "Disability placard only." },
+  free:        { label: "Free / time-limit", color: "#2ee6c5", blurb: "Free, maybe with a time cap." },
+  unknown:     { label: "Unknown", color: "#5c6370", blurb: "No policy data for this time." },
 };
 
 const DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];

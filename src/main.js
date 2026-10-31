@@ -3,6 +3,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import "./style.css";
 import { CATEGORIES, verdict, fmtRate, fmtSpan, dayKey, policyActive } from "./rules.js";
 import { DEMO_ZONES, DEMO_POLICIES } from "./demo.js";
+import { darkStyle, glowLayers } from "./basemap.js";
 
 const $ = (s) => document.querySelector(s);
 const status = (msg, kind = "") => { const el = $("#status"); el.textContent = msg; el.className = `status ${kind}`; };
@@ -16,55 +17,39 @@ let day = dayKey(), hour = new Date().getHours();
 const fetchedTiles = new Set();
 
 // ---------- map ----------
-const CARTO = (layer) => [0, 1, 2, 3].map((i) => `https://${"abcd"[i]}.basemaps.cartocdn.com/rastertiles/${layer}/{z}/{x}/{y}@2x.png`);
 const map = new maplibregl.Map({
   container: "map",
   center: [-71.0589, 42.3601],
-  zoom: 14.2,
+  zoom: 15.2,
+  pitch: 58,
+  bearing: -17,
   minZoom: 10,
   maxZoom: 20,
+  maxPitch: 75,
+  antialias: true,
   attributionControl: false,
-  style: {
-    version: 8,
-    sources: {
-      base: { type: "raster", tiles: CARTO("voyager_nolabels"), tileSize: 256, attribution: "© OpenStreetMap, © CARTO" },
-      labels: { type: "raster", tiles: CARTO("voyager_only_labels"), tileSize: 256 },
-    },
-    layers: [
-      { id: "bg", type: "background", paint: { "background-color": "#fdf6e3" } },
-      // Cartoon treatment: crank saturation + contrast on the basemap, mute brightness a touch.
-      { id: "base", type: "raster", source: "base", paint: { "raster-saturation": 0.65, "raster-contrast": 0.35, "raster-brightness-max": 0.92, "raster-hue-rotate": 8 } },
-    ],
-  },
+  style: darkStyle(),
 });
-map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
+window.__map = map; // handy in devtools / screenshot script
+map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "bottom-right");
 map.addControl(new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true }), "bottom-right");
 map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-left");
 
-const colorExpr = ["match", ["get", "cat"], ...Object.entries(CATEGORIES).flatMap(([k, v]) => [k, v.color]), "#c9c9c9"];
+const colorExpr = ["match", ["get", "cat"], ...Object.entries(CATEGORIES).flatMap(([k, v]) => [k, v.color]), "#5c6370"];
+const hoverExpr = ["boolean", ["feature-state", "hover"], false];
 
 map.on("load", () => {
   map.addSource("zones", { type: "geojson", data: { type: "FeatureCollection", features: [] }, promoteId: "curb_zone_id" });
   map.addSource("meters", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
 
-  map.addLayer({ id: "zone-fill", type: "fill", source: "zones", filter: ["==", ["geometry-type"], "Polygon"],
-    paint: { "fill-color": colorExpr, "fill-opacity": 0.35 } });
-  // Chunky dark outline = the cartoon ink line
-  map.addLayer({ id: "zone-casing", type: "line", source: "zones", layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": "#1b1b2f", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 3, 16, 10, 19, 18], "line-opacity": 0.9 } });
-  map.addLayer({ id: "zone-line", type: "line", source: "zones", layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": colorExpr, "line-width": ["interpolate", ["linear"], ["zoom"], 12, 1.6, 16, 6, 19, 12],
-      "line-opacity": ["case", ["boolean", ["feature-state", "hover"], false], 1, 0.95] } });
-  // Highlight ring on hover
-  map.addLayer({ id: "zone-hover", type: "line", source: "zones", layout: { "line-cap": "round" },
-    paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 6, 16, 16, 19, 26],
-      "line-opacity": ["case", ["boolean", ["feature-state", "hover"], false], 0.55, 0] } }, "zone-casing");
+  // Curb lines go after the 3D buildings so they draw on top and thread between towers.
+  for (const layer of glowLayers(colorExpr, hoverExpr)) map.addLayer(layer, "road-label");
 
+  map.addLayer({ id: "meters-glow", type: "circle", source: "meters", layout: { visibility: "none" },
+    paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 13, 5, 17, 14], "circle-color": "#3ea8ff", "circle-blur": 1, "circle-opacity": 0.6 } }, "road-label");
   map.addLayer({ id: "meters", type: "circle", source: "meters", layout: { visibility: "none" },
-    paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 13, 2, 17, 7], "circle-color": "#4d9fff",
-      "circle-stroke-color": "#1b1b2f", "circle-stroke-width": 2 } });
-
-  map.addLayer({ id: "labels", type: "raster", source: "labels", paint: { "raster-opacity": 0.9 } });
+    paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 13, 2, 17, 5], "circle-color": "#ffffff",
+      "circle-stroke-color": "#3ea8ff", "circle-stroke-width": 2 } }, "road-label");
 
   buildLegend();
   loadPolicies().then(() => refreshViewport());
@@ -103,7 +88,7 @@ async function loadPolicies() {
 function tileKey(b) { return b.map((n) => n.toFixed(2)).join(","); }
 
 async function refreshViewport() {
-  if (map.getZoom() < 12.5) { status("Zoom in to load curb zones (≥ z12.5)", "muted"); return; }
+  if (map.getZoom() < 12.5) { status("Zoom in to load curb zones", "muted"); return; }
   const b = map.getBounds();
   // snap to 0.01° grid so repeated pans reuse cached tiles
   const g = 0.01, f = (n) => Math.floor(n / g) * g, c = (n) => Math.ceil(n / g) * g;
@@ -187,10 +172,14 @@ $("#hour").addEventListener("input", (e) => { hour = +e.target.value; syncTime()
 $("#day").addEventListener("change", (e) => { day = e.target.value; syncTime(); });
 $("#nowBtn").addEventListener("click", () => { day = dayKey(); hour = new Date().getHours(); syncTime(); });
 $("#showMeters").addEventListener("change", (e) => {
-  map.setLayoutProperty("meters", "visibility", e.target.checked ? "visible" : "none");
+  for (const id of ["meters", "meters-glow"]) map.setLayoutProperty(id, "visibility", e.target.checked ? "visible" : "none");
   if (e.target.checked && !map.getSource("meters")._data?.features?.length) loadMeters();
 });
-$("#showLabels").addEventListener("change", (e) => map.setLayoutProperty("labels", "visibility", e.target.checked ? "visible" : "none"));
+$("#showLabels").addEventListener("change", (e) => { for (const id of ["road-label", "place-neighbourhood", "place-city"]) map.setLayoutProperty(id, "visibility", e.target.checked ? "visible" : "none"); });
+$("#show3d").addEventListener("change", (e) => {
+  map.setLayoutProperty("buildings-3d", "visibility", e.target.checked ? "visible" : "none");
+  map.easeTo({ pitch: e.target.checked ? 58 : 0, bearing: e.target.checked ? -17 : 0, duration: 600 });
+});
 $("#panelToggle").addEventListener("click", () => $("#panel").classList.toggle("collapsed"));
 syncTime();
 

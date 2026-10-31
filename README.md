@@ -1,7 +1,7 @@
 # Curb Cartoon 🅿️
 
 ![Curb Cartoon preview](docs/preview-desktop.png)
-*Preview shot against the mock city API with a stub basemap; the live site uses CARTO Voyager tiles and Fredoka.*
+*Preview shot against the mock city API with stand-in buildings; live, the towers are real OpenFreeMap footprints with heights and the curb lines follow actual street edges.*
 
 An interactive, slightly cartoony map of **every curb in Boston and the parking rule that applies** — right now, or at any day/hour you pick.
 

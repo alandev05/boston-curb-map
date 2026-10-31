@@ -201,7 +201,7 @@ describe.skipIf(!hasDist)("built front-end is served", () => {
     const bundle = await jr.text();
     expect(bundle).toMatch(/\/api\/zones\?bbox=/); // front-end actually calls our API
     expect(bundle).toMatch(/tiles\.openfreemap\.org/);
-    expect(bundle).toMatch(/fill-extrusion-height/); // 3D buildings present
+    expect(bundle).not.toMatch(/buildings-3d/); // 2D only (our style has no extrusion layer)
     expect(bundle).toMatch(/lite=1/); // citywide overview wired up
     expect(html).not.toMatch(/fonts\.googleapis/); // system font only
     expect(html).toMatch(/dataset\.theme/); // theme bootstrapped before paint

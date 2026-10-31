@@ -1,11 +1,11 @@
 # Boston curb parking rules
 
-![Dark, block scale](docs/preview-desktop.png)
+![Block scale](docs/preview-desktop.png)
 ![Citywide overview](docs/preview-city.png)
 ![Light mode](docs/preview-light.png)
 *Preview shot against the mock city API with stand-in buildings; live, the towers are real OpenFreeMap footprints with heights and the curb lines follow actual street edges.*
 
-An interactive 3D map of **every curb in Boston and the parking rule that applies** — right now, or at any day/hour you pick.
+An interactive map of **every curb in Boston and the parking rule that applies** — right now, or at any day/hour you pick.
 
 Live data comes from the City of Boston's [Curb Lab](https://www.boston.gov/curb-lab), which publishes a public [Curb Data Specification](https://github.com/openmobilityfoundation/curb-data-specification) (CDS) feed at `https://cds-curb-api.boston.gov`. Parking meters come from the City's [ArcGIS Hub Parking Meters item](https://bostonopendata-boston.opendata.arcgis.com/datasets/parking-meters/api).
 
@@ -87,4 +87,4 @@ npm run build && npm run serve
 
 ## Themes
 
-Dark by default (or follows `prefers-color-scheme`); the toggle persists in `localStorage`. Both themes share one layer list so `map.setStyle(…, { diff: true })` swaps paint in place. UI uses the system font stack (Helvetica Neue / Segoe / Roboto) — no web fonts, no logos.
+Dark by default (or follows `prefers-color-scheme`); the toggle persists in `localStorage`. The map is strictly 2D (pitch and rotation locked, like Google Maps). Both themes share one layer list so `map.setStyle(…, { diff: true })` swaps paint in place. UI uses the system font stack (Helvetica Neue / Segoe / Roboto) — no web fonts, no logos.

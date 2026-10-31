@@ -1,5 +1,5 @@
 // Basemap + overlay style, built per theme so the whole map can switch with map.setStyle(diff).
-// Vector tiles: OpenFreeMap (OpenMapTiles schema, free, no key). 3D buildings extrude by height.
+// Vector tiles: OpenFreeMap (OpenMapTiles schema, free, no key). Flat 2D, like Google Maps.
 // Curb lines are part of the style so they survive theme switches.
 
 export const OFM_TILES = "https://tiles.openfreemap.org/planet";
@@ -8,12 +8,12 @@ export const OFM_GLYPHS = "https://tiles.openfreemap.org/fonts/{fontstack}/{rang
 export const PALETTES = {
   dark: {
     bg: "#0d0f14", water: "#07090f", park: "#111a16", road: "#1a1e2a", roadMajor: "#242938", roadOutline: "#0d0f14",
-    building: "#262b38", buildingMid: "#353b4b", buildingTop: "#4a5162", label: "#c3c9d6", labelMuted: "#7b8294", halo: "#0d0f14",
+    building: "#1c2130", buildingTop: "#2a3041", label: "#c3c9d6", labelMuted: "#7b8294", halo: "#0d0f14",
     glowOpacity: 0.55, core: "#ffffff", fillOpacity: 0.25,
   },
   light: {
     bg: "#eef0f3", water: "#cfd9e6", park: "#dde7dc", road: "#ffffff", roadMajor: "#ffffff", roadOutline: "#d7dbe2",
-    building: "#d6d9e0", buildingMid: "#e2e5eb", buildingTop: "#f1f2f5", label: "#2b303c", labelMuted: "#6b7282", halo: "#eef0f3",
+    building: "#e1e4ea", buildingTop: "#d2d6de", label: "#2b303c", labelMuted: "#6b7282", halo: "#eef0f3",
     glowOpacity: 0.3, core: "#ffffff", fillOpacity: 0.3,
   },
 };
@@ -64,14 +64,9 @@ export function buildStyle(theme, { colorExpr, hoverExpr, tiles, filter } = {}) 
       { id: "rail", type: "line", source: "omt", "source-layer": "transportation", filter: ["==", "class", "rail"], minzoom: 12,
         paint: { "line-color": P.roadOutline, "line-width": 1, "line-dasharray": [3, 3] } },
 
-      // The city: extruded buildings grow in as you zoom past z13 (flat footprints at city scale).
-      { id: "buildings-3d", type: "fill-extrusion", source: "omt", "source-layer": "building", minzoom: 12.5,
-        paint: {
-          "fill-extrusion-color": ["interpolate", ["linear"], ["coalesce", ["get", "render_height"], 10], 0, P.building, 60, P.buildingMid, 150, P.buildingTop],
-          "fill-extrusion-height": ["interpolate", ["linear"], ["zoom"], 13, 0, 14.8, ["coalesce", ["get", "render_height"], 10]],
-          "fill-extrusion-base": ["interpolate", ["linear"], ["zoom"], 13, 0, 14.8, ["coalesce", ["get", "render_min_height"], 0]],
-          "fill-extrusion-opacity": 0.92, "fill-extrusion-vertical-gradient": true,
-        } },
+      // Flat building footprints (Google-Maps-2D style), fading in from z13.
+      { id: "buildings", type: "fill", source: "omt", "source-layer": "building", minzoom: 13,
+        paint: { "fill-color": P.building, "fill-outline-color": P.buildingTop, "fill-opacity": ["interpolate", ["linear"], ["zoom"], 13, 0, 14.5, 0.9] } },
 
       // Curb lines: soft halo → colored line → thin bright core. Thin and bright at city scale, chunky up close.
       { id: "zone-fill", type: "fill", ...curb, filter: withFilter(["==", ["geometry-type"], "Polygon"]), paint: { "fill-color": colorExpr, "fill-opacity": P.fillOpacity } },

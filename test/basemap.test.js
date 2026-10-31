@@ -19,14 +19,14 @@ describe.each(["dark", "light"])("buildStyle(%s)", (theme) => {
     expect(layer("bg").paint["background-color"]).toBe(PALETTES[theme].bg);
     expect(layer("road-label").paint["text-color"]).toBe(PALETTES[theme].label);
   });
-  it("has height-driven 3D buildings that are flat at city scale", () => {
-    const b = layer("buildings-3d");
-    expect(b.type).toBe("fill-extrusion");
-    expect(JSON.stringify(b.paint["fill-extrusion-height"])).toMatch(/render_height/);
-    expect(b.paint["fill-extrusion-height"][4]).toBe(0); // zoom 13 → 0 height
+  it("has flat 2D building footprints (no extrusion anywhere)", () => {
+    const b = layer("buildings");
+    expect(b.type).toBe("fill");
+    expect(b.minzoom).toBe(13);
+    expect(style.layers.some((l) => l.type === "fill-extrusion")).toBe(false);
   });
-  it("orders buildings < curb lines < labels, so curbs thread between towers and labels stay readable", () => {
-    expect(ids.indexOf("buildings-3d")).toBeLessThan(ids.indexOf("zone-glow"));
+  it("orders buildings < curb lines < labels, so curbs draw over footprints and labels stay readable", () => {
+    expect(ids.indexOf("buildings")).toBeLessThan(ids.indexOf("zone-glow"));
     expect(ids.indexOf("zone-core")).toBeLessThan(ids.indexOf("road-label"));
     for (const id of [...LABEL_LAYERS, ...METER_LAYERS, "zone-fill", "zone-glow", "zone-line", "zone-core"]) expect(ids).toContain(id);
   });

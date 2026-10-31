@@ -32,16 +32,15 @@ INJECT = """() => new Promise(res => {
     }
     map.addSource("demo-bld", { type: "geojson", data: { type: "FeatureCollection", features: bld } });
     map.addSource("demo-st", { type: "geojson", data: { type: "FeatureCollection", features: st } });
-    const b3d = map.getLayer("buildings-3d");
-    const paint = {}; for (const k of ["fill-extrusion-color","fill-extrusion-height","fill-extrusion-base","fill-extrusion-opacity","fill-extrusion-vertical-gradient"]) paint[k] = map.getPaintProperty("buildings-3d", k);
+    const paint = { "fill-color": map.getPaintProperty("buildings", "fill-color"), "fill-outline-color": map.getPaintProperty("buildings", "fill-outline-color"), "fill-opacity": 0.9 };
     const rc = (id) => map.getPaintProperty(id, "line-color");
     const z = map.getZoom(), big = z >= 15;
-    map.addLayer({ id: "demo-st-outline", type: "line", source: "demo-st", layout: { "line-cap": "round" }, paint: { "line-color": rc("road-outline"), "line-width": ["case", ["get","major"], big ? 22 : 3, big ? 12 : 1.5] } }, "buildings-3d");
-    map.addLayer({ id: "demo-st", type: "line", source: "demo-st", layout: { "line-cap": "round" }, paint: { "line-color": ["case", ["get","major"], rc("road-major"), rc("road-minor")], "line-width": ["case", ["get","major"], big ? 18 : 2, big ? 9 : 0.8] } }, "buildings-3d");
-    map.addLayer({ id: "demo-bld", type: "fill-extrusion", source: "demo-bld", paint }, "buildings-3d");
+    map.addLayer({ id: "demo-st-outline", type: "line", source: "demo-st", layout: { "line-cap": "round" }, paint: { "line-color": rc("road-outline"), "line-width": ["case", ["get","major"], big ? 22 : 3, big ? 12 : 1.5] } }, "buildings");
+    map.addLayer({ id: "demo-st", type: "line", source: "demo-st", layout: { "line-cap": "round" }, paint: { "line-color": ["case", ["get","major"], rc("road-major"), rc("road-minor")], "line-width": ["case", ["get","major"], big ? 18 : 2, big ? 9 : 0.8] } }, "buildings");
+    map.addLayer({ id: "demo-bld", type: "fill", source: "demo-bld", paint }, "buildings");
     map.once("idle", res);
   };
-  const tick = () => (map.getLayer && map.getLayer("buildings-3d") && map.isStyleLoaded()) ? run() : setTimeout(tick, 100);
+  const tick = () => (map.getLayer && map.getLayer("buildings") && map.isStyleLoaded()) ? run() : setTimeout(tick, 100);
   tick();
 })"""
 
@@ -78,11 +77,11 @@ async def main():
             print("saved", out, "|", await page.locator("#status").inner_text())
             await ctx.close()
         os.makedirs(OUT, exist_ok=True)
-        BLOCK = {"center": [-71.0589, 42.3601], "zoom": 15.6, "pitch": 55, "bearing": -17}
-        CITY = {"center": [-71.07, 42.33], "zoom": 11.6, "pitch": 0, "bearing": 0}
+        BLOCK = {"center": [-71.0589, 42.3601], "zoom": 15.6}
+        CITY = {"center": [-71.07, 42.33], "zoom": 11.6}
         await shot(1440, 900, f"{OUT}/preview-desktop.png", view=BLOCK, theme="dark")
         await shot(1440, 900, f"{OUT}/preview-city.png", view=CITY, theme="dark", popup=False)
         await shot(1440, 900, f"{OUT}/preview-light.png", view=BLOCK, theme="light")
-        await shot(430, 860, f"{OUT}/preview-mobile.png", mobile=True, popup=False, hour=17, view={"center": [-71.0589, 42.3601], "zoom": 15.2, "pitch": 55, "bearing": -17}, theme="dark")
+        await shot(430, 860, f"{OUT}/preview-mobile.png", mobile=True, popup=False, hour=17, view={"center": [-71.0589, 42.3601], "zoom": 15.2}, theme="dark")
         await b.close()
 asyncio.run(main())

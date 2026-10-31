@@ -70,17 +70,18 @@ const map = new maplibregl.Map({
   container: "map",
   center: [-71.0589, 42.3601],
   zoom: 12.2,
-  pitch: 0,
-  bearing: 0,
   minZoom: 9,
   maxZoom: 20,
-  maxPitch: 72,
+  maxPitch: 0,          // 2D only
+  pitchWithRotate: false,
+  dragRotate: false,
+  touchPitch: false,
   antialias: true,
   attributionControl: false,
   style: buildStyle(theme, styleOpts()),
 });
 window.__map = map; // handy in devtools / screenshot script
-map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "bottom-right");
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
 map.addControl(new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true }), "bottom-right");
 map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-left");
 
@@ -88,7 +89,6 @@ let metersData = null;
 function applyLayerToggles() {
   for (const id of METER_LAYERS) map.setLayoutProperty(id, "visibility", $("#showMeters").checked ? "visible" : "none");
   for (const id of LABEL_LAYERS) map.setLayoutProperty(id, "visibility", $("#showLabels").checked ? "visible" : "none");
-  map.setLayoutProperty("buildings-3d", "visibility", $("#show3d").checked ? "visible" : "none");
 }
 // After any setStyle (theme switch) the GeoJSON sources come back empty: refill them.
 map.on("style.load", () => {
@@ -96,16 +96,6 @@ map.on("style.load", () => {
   repaint();
   if (metersData) map.getSource("meters")?.setData(metersData);
 });
-
-// Google-Maps-style camera: flat at city scale, tilts in as you get close to the blocks (unless 3D is off).
-let autoTilt = true;
-map.on("zoomend", () => {
-  if (!autoTilt || !$("#show3d").checked) return;
-  const z = map.getZoom();
-  const want = z >= 15 ? 55 : z >= 14 ? 35 : 0;
-  if (Math.abs(map.getPitch() - want) > 5) map.easeTo({ pitch: want, duration: 500 });
-});
-map.on("pitchstart", (e) => { if (e.originalEvent) autoTilt = false; });
 
 map.on("load", () => {
   buildLegend();
@@ -260,11 +250,6 @@ $("#day").addEventListener("change", (e) => { day = e.target.value; syncTime(); 
 $("#nowBtn").addEventListener("click", () => { day = dayKey(); hour = new Date().getHours(); syncTime(); });
 $("#showMeters").addEventListener("change", (e) => { applyLayerToggles(); if (e.target.checked && !metersData && !(mode === "tiles" && manifest.meters > 0)) loadMeters(); });
 $("#showLabels").addEventListener("change", applyLayerToggles);
-$("#show3d").addEventListener("change", (e) => {
-  applyLayerToggles();
-  autoTilt = e.target.checked;
-  map.easeTo({ pitch: e.target.checked && map.getZoom() >= 14 ? 55 : 0, duration: 600 });
-});
 function setTheme(t) {
   theme = t;
   document.documentElement.dataset.theme = t;

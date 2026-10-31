@@ -6,12 +6,19 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "npm run build && vitest run",
+    "test:watch": "vitest",
+    "serve": "node scripts/dev-server.js",
+    "mock": "node scripts/mock-cds.js --port 4321",
+    "dev:local": "npm run build && CDS_BASE=http://localhost:4321 CKAN_BASE=http://localhost:4321 node scripts/dev-server.js",
+    "test:unit": "vitest run test/rules.test.js test/api.test.js"
   },
   "dependencies": {
     "maplibre-gl": "^4.7.1"
   },
   "devDependencies": {
-    "vite": "^5.4.11"
+    "vite": "^5.4.11",
+    "vitest": "^2.1.9"
   }
 }

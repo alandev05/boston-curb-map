@@ -49,3 +49,24 @@ index.html  Panel + legend + time picker
 * Curb Lab coverage started in Chinatown and is expanding citywide — some neighbourhoods may still be empty.
 * Category bucketing is a heuristic over CDS `activity` / `user_classes` / `rate`; read the sign before you park.
 * Not affiliated with the City of Boston.
+
+## Testing
+
+```bash
+npm test          # builds, then 69 tests: rule engine, API handlers (mocked fetch), HTTP end-to-end
+npm run test:unit # just the fast ones
+```
+
+`test/e2e.test.js` boots `scripts/mock-cds.js` (a fake `cds-curb-api.boston.gov` + CKAN with ~5,000 generated curb zones across Boston) and `scripts/dev-server.js` (mounts `api/*.js` without Vercel), then hits them over real HTTP.
+
+### Localhost without Vercel
+
+```bash
+# terminal 1 — fake city API (offline / deterministic)
+npm run mock
+# terminal 2 — site + /api, pointed at the mock
+npm run dev:local        # http://localhost:3000
+
+# or against the real city API:
+npm run build && npm run serve
+```

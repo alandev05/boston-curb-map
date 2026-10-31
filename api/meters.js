@@ -2,7 +2,7 @@ import { send, fail } from "./_cds.js";
 
 // GET /api/meters -> GeoJSON points of Boston parking meters from Analyze Boston (CKAN).
 // The resource id is discovered at runtime so the route survives dataset re-uploads.
-const CKAN = "https://data.boston.gov/api/3/action";
+const CKAN = (process.env.CKAN_BASE || "https://data.boston.gov") + "/api/3/action";
 
 async function ckan(action, params) {
   const url = new URL(`${CKAN}/${action}`);
@@ -41,7 +41,8 @@ export default async function handler(req, res) {
       for (const row of page.records || []) {
         const lng = pick(row, ["longitude", "long", "lon", "x"]);
         const lat = pick(row, ["latitude", "lat", "y"]);
-        if (lng == null || lat == null || Math.abs(lat) > 90) continue;
+        // Greater-Boston sanity box catches swapped columns and (0,0) junk.
+        if (lng == null || lat == null || lat < 41.5 || lat > 43 || lng < -72 || lng > -70) continue;
         features.push({ type: "Feature", geometry: { type: "Point", coordinates: [lng, lat] }, properties: row });
       }
       if ((page.records || []).length < 10000) break;

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Curb Cartoon · Boston parking rules</title>
+    <meta name="description" content="Every curb in Boston and the parking rule that applies, right now or any time you pick. Built on the city's open Curb Data Specification feed." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Nunito:wght@500;700;800&display=swap" rel="stylesheet" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%232ec4b6' stroke='%231b1b2f' stroke-width='5'/%3E%3Ctext x='32' y='43' font-size='32' text-anchor='middle' font-family='Arial Black' fill='%231b1b2f'%3EP%3C/text%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <div id="map"></div>
+
+    <aside id="panel">
+      <header>
+        <h1><span class="p-badge">P</span> Curb Cartoon</h1>
+        <p class="tag">Every Boston curb + its parking rule. Pick a time, see what's legal.</p>
+      </header>
+
+      <section class="card">
+        <h2>When?</h2>
+        <div class="row">
+          <select id="day" aria-label="Day of week">
+            <option value="mon">Mon</option><option value="tue">Tue</option><option value="wed">Wed</option>
+            <option value="thu">Thu</option><option value="fri">Fri</option><option value="sat">Sat</option><option value="sun">Sun</option>
+          </select>
+          <input id="hour" type="range" min="0" max="23" step="1" value="12" aria-label="Hour" />
+          <output id="hourLabel">12 PM</output>
+        </div>
+        <button id="nowBtn" class="pill">⏱ Now</button>
+      </section>
+
+      <section class="card">
+        <h2>Rules</h2>
+        <ul id="legend" class="legend"></ul>
+      </section>
+
+      <section class="card">
+        <h2>Layers</h2>
+        <label class="toggle"><input type="checkbox" id="showMeters" /> <span>Parking meters</span></label>
+        <label class="toggle"><input type="checkbox" id="showLabels" checked /> <span>Street names</span></label>
+      </section>
+
+      <footer>
+        <div id="status" class="status">Loading curb data…</div>
+        <small>Data: City of Boston <a href="https://www.boston.gov/curb-lab" target="_blank" rel="noopener">Curb Lab</a> CDS API + <a href="https://data.boston.gov" target="_blank" rel="noopener">Analyze Boston</a>. Not official guidance — read the sign.</small>
+      </footer>
+    </aside>
+
+    <button id="panelToggle" aria-label="Toggle panel">☰</button>
+
+    <div id="popup" class="popup hidden"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

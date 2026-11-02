@@ -49,7 +49,8 @@ document.documentElement.dataset.theme = theme;
 // b = gets better, x = doesn't work). The style slices them per feature, so panning and zooming run no JS and
 // keep no per-feature state. api mode writes the same results into each feature's `cat`/`fit` properties.
 let grades = { key: "", cat: "", fit: "" };
-const stayKey = () => `${Math.floor(startTime().getTime() / 60000)}|${stayMin}|${+profile.permit}|${+profile.placard}`;
+// Includes the data mode and rule-set count, so grades made before the data arrived are never reused.
+const stayKey = () => `${mode}|${rulesets.length}|${Math.floor(startTime().getTime() / 60000)}|${stayMin}|${+profile.permit}|${+profile.placard}`;
 const rsAt = (str) => ["slice", str, ["coalesce", ["get", "rs"], 0], ["+", ["coalesce", ["get", "rs"], 0], 1]];
 const catKey = () => (mode === "tiles"
   ? ["match", rsAt(grades.cat), ...Object.entries(CODES).flatMap(([k, c]) => [c, k]), ["match", ["coalesce", ["get", "dom"], "u"], ...Object.entries(CODES).flatMap(([k, c]) => [c, k]), "unknown"]]
@@ -86,8 +87,8 @@ async function detectMode() {
     const [pr, rr] = await Promise.all([fetch("/data/policies.json"), fetch("/data/rulesets.json")]);
     policies = pr.ok ? await pr.json() : {};
     rulesets = rr.ok ? await rr.json() : [];
-    gradeAll();
     mode = "tiles";
+    gradeAll();
   } catch { mode = "api"; }
 }
 

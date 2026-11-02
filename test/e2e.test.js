@@ -182,13 +182,13 @@ describe.skipIf(!hasDist || !hasTiles)("static tiles mode over HTTP", () => {
     const m = await (await fetch(`${base}/data/manifest.json`)).json();
     expect(m.meters).toBeGreaterThan(1000);
   });
-  it("the bundle boots into tiles mode (reads the manifest, slices the rule-set grades)", async () => {
+  it("the bundle boots into tiles mode (reads the manifest, looks up the rule-set grades)", async () => {
     const html = await (await fetch(`${base}/`)).text();
     const js = html.match(/src="(\/assets\/[^"]+\.js)"/)[1];
     const bundle = await (await fetch(base + js)).text();
     expect(bundle).toMatch(/\/data\/manifest\.json/);
     expect(bundle).toMatch(/\/data\/rulesets\.json/);
-    expect(bundle).toMatch(/"slice"/);
+    expect(bundle).toMatch(/"at",\s*\["at",\s*\["get",\s*"rs"\]/); // O(1) array lookup per curb, not a string slice
   });
 });
 

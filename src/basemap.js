@@ -92,7 +92,10 @@ const roadRank = ["match", ["get", "class"], ...CLASSES.flatMap((c) => [c, ROADS
 // overview tiles carry nothing else. From DETAIL_ZOOM every curb with rules shows; "no data" curbs join, dimmed, at 14.
 export const DETAIL_ZOOM = 11, NO_DATA_ZOOM = 14;
 export const OVERVIEW_ROADS = ["motorway", "trunk", "primary", "secondary"], OVERVIEW_MIN_LEN = 25;
-export function curbPaint(theme, { colorExpr = "#888", dimExpr = false, gateExpr = 1, betterExpr = false } = {}) {
+// `bind` (optional): ["name", expr, …] — variables the other expressions use as ["var", name] (the curb's category
+// looked up once per property instead of once per use in the JSON). Each paint value that refers to one is
+// wrapped in a single "let".
+export function curbPaint(theme, { colorExpr = "#888", dimExpr = false, gateExpr = 1, betterExpr = false, bind = null } = {}) {
   const P = PALETTES[theme] || PALETTES.dark;
   const len = ["coalesce", ["get", "len"], 999];
   const major = ["in", ["coalesce", ["get", "rc"], ""], ["literal", OVERVIEW_ROADS]];
@@ -104,7 +107,9 @@ export function curbPaint(theme, { colorExpr = "#888", dimExpr = false, gateExpr
   const side = ["coalesce", ["get", "side"], 0];
   const width = (k) => ["interpolate", ["exponential", 2], ["zoom"], ...CURB_W.flatMap(([z, w]) => [z, ["case", dimExpr, Math.max(0.6, +(w * 0.6 * k).toFixed(2)), +(w * k).toFixed(2)]])];
   const offset = ["interpolate", ["exponential", 2], ["zoom"], ...ZOOMS.filter((z) => z >= 9).flatMap((z) => [z, ["*", side, byClassZoom("rc", curbOffsetPx, [z]).at(-1)]])];
-  return {
+  const usesVar = (v) => JSON.stringify(v).includes('"var"');
+  const bound = (v) => (bind && usesVar(v) ? ["let", ...bind, v] : v);
+  const layers = {
     "zone-fill": { "fill-color": colorExpr, "fill-opacity": g(["case", dimExpr, P.fillOpacity * 0.4, P.fillOpacity]) },
     "zone-line": { "line-color": colorExpr, "line-opacity": shown, "line-width": width(1), "line-offset": offset },
     "zone-better": {
@@ -112,13 +117,15 @@ export function curbPaint(theme, { colorExpr = "#888", dimExpr = false, gateExpr
       "line-opacity": ["step", ["zoom"], 0, 13, ["case", betterExpr, g(1), 0]],
     },
   };
+  for (const props of Object.values(layers)) for (const k of Object.keys(props)) props[k] = bound(props[k]);
+  return layers;
 }
 
 // `tiles` (optional): { url, minzoom, maxzoom, bounds } → curb layers read static vector tiles (source-layer "curbs")
 // instead of the runtime GeoJSON source. Layer ids are identical either way so the UI code doesn't care.
-export function buildStyle(theme, { colorExpr, dimExpr, gateExpr, betterExpr, tiles, filter } = {}) {
+export function buildStyle(theme, { colorExpr, dimExpr, gateExpr, betterExpr, bind, tiles, filter } = {}) {
   const P = PALETTES[theme] || PALETTES.dark;
-  const paint = curbPaint(theme, { colorExpr: colorExpr || "#888", dimExpr, gateExpr, betterExpr });
+  const paint = curbPaint(theme, { colorExpr: colorExpr || "#888", dimExpr, gateExpr, betterExpr, bind });
   const curb = tiles ? { source: "curbs", "source-layer": "curbs" } : { source: "zones" };
   const curbSource = tiles
     ? { curbs: { type: "vector", tiles: [tiles.url], minzoom: tiles.minzoom, maxzoom: tiles.maxzoom, bounds: tiles.bounds } }

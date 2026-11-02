@@ -44,33 +44,38 @@ document.documentElement.dataset.theme = theme;
 // ---------- expressions ----------
 // Every curb is graded in the browser for the actual date and stay (street cleaning runs only some weeks of the
 // month; Sundays and holidays free the meters). Curbs sharing a set of rules grade the same, so in tiles mode each
-// rule set (`rs`) is graded once and the results go into the style as two strings indexed by `rs`: `grades.cat`
-// (one CODES letter: the category drawn — the most restrictive one met during a stay) and `grades.fit` (o = works,
-// b = gets better, x = doesn't work). The style slices them per feature, so panning and zooming run no JS and
-// keep no per-feature state. api mode writes the same results into each feature's `cat`/`fit` properties.
-let grades = { key: "", cat: "", fit: "" };
+// rule set (`rs`) is graded once and the results go into the style as two arrays indexed by `rs`: `grades.cat`
+// (index into CATS: the category drawn — the most restrictive one met during a stay) and `grades.fit` (index into
+// FITS). The style looks them up per feature with ["at", rs, …], so panning and zooming run no JS and keep no
+// per-feature state. Small integers keep each table ~20 KB; an array lookup is O(1) where slicing a long string
+// (the first version) copied the whole string per curb per expression, seconds of worker time per tile.
+// api mode writes the same results into each feature's `cat`/`fit` properties.
+const CATS = Object.keys(CODES), FITS = ["o", "b", "x"];
+let grades = { key: "", cat: [], fit: [] };
 // Includes the data mode and rule-set count, so grades made before the data arrived are never reused.
 const stayKey = () => `${mode}|${rulesets.length}|${Math.floor(startTime().getTime() / 60000)}|${stayMin}|${+profile.permit}|${+profile.placard}`;
-const rsAt = (str) => ["slice", str, ["coalesce", ["get", "rs"], 0], ["+", ["coalesce", ["get", "rs"], 0], 1]];
-const catKey = () => (mode === "tiles"
-  ? ["match", rsAt(grades.cat), ...Object.entries(CODES).flatMap(([k, c]) => [c, k]), ["match", ["coalesce", ["get", "dom"], "u"], ...Object.entries(CODES).flatMap(([k, c]) => [c, k]), "unknown"]]
-  : ["coalesce", ["get", "cat"], "unknown"]);
+const lookup = (table, values) => ["at", ["at", ["get", "rs"], ["literal", table]], ["literal", values]];
+// Not graded yet (or api mode): the weekly-dominant category baked into the tile.
+const domCat = ["match", ["coalesce", ["get", "dom"], "u"], ...Object.entries(CODES).flatMap(([k, c]) => [c, k]), "unknown"];
+const catKey = () => (mode !== "tiles" ? ["coalesce", ["get", "cat"], "unknown"] : grades.cat.length ? lookup(grades.cat, CATS) : domCat);
 const FIT_CODE = { ok: "o", better: "b", breaks: "x", no: "x" };
-const fitKey = () => (mode === "tiles" ? rsAt(grades.fit) : ["coalesce", ["get", "fit"], "o"]);
+const fitKey = () => (mode !== "tiles" ? ["coalesce", ["get", "fit"], "o"] : grades.fit.length ? lookup(grades.fit, FITS) : "o");
+// The expressions below refer to ["var","cat"] / ["var","fit"]; curbPaint binds them once per paint property.
+const CAT = ["var", "cat"], FIT = ["var", "fit"];
 const highlightExpr = ["any", ["boolean", ["feature-state", "hover"], false], ["boolean", ["feature-state", "selected"], false]];
 function colorExprFor() {
-  const key = catKey(), fallback = catColor("unknown", theme);
+  const key = CAT, fallback = catColor("unknown", theme);
   const pairs = (f) => Object.keys(CATEGORIES).flatMap((k) => [k, f(catColor(k, theme))]);
   return ["case", highlightExpr, ["match", key, ...pairs((c) => shade(c, theme)), shade(fallback, theme)], ["match", key, ...pairs((c) => c), fallback]];
 }
 function gateExprFor() {
-  const sel = selected.size ? ["case", ["in", catKey(), ["literal", [...selected]]], 1, 0] : 1;
-  const fade = stayMin ? ["match", fitKey(), "x", 0.22, 1] : 1;
+  const sel = selected.size ? ["case", ["in", CAT, ["literal", [...selected]]], 1, 0] : 1;
+  const fade = stayMin ? ["match", FIT, "x", 0.22, 1] : 1;
   return sel === 1 && fade === 1 ? 1 : ["*", sel, fade];
 }
 const paintOpts = () => ({
-  colorExpr: colorExprFor(), dimExpr: ["==", catKey(), "unknown"], gateExpr: gateExprFor(),
-  betterExpr: stayMin ? ["==", fitKey(), "b"] : false,
+  colorExpr: colorExprFor(), dimExpr: ["==", CAT, "unknown"], gateExpr: gateExprFor(),
+  betterExpr: stayMin ? ["==", FIT, "b"] : false, bind: ["cat", catKey(), "fit", fitKey()],
 });
 function styleOpts() {
   const tiles = mode === "tiles" && manifest ? { url: location.origin + manifest.tile_url, minzoom: manifest.minzoom, maxzoom: manifest.maxzoom, bounds: manifest.bbox, meters: manifest.meters > 0 } : null;
@@ -154,7 +159,7 @@ const curbSource = () => (mode === "tiles" ? { source: "curbs", sourceLayer: "cu
 function drawnCat(f) {
   const p = f.properties;
   if (mode !== "tiles") return zones.get(f.id)?.properties.cat || p.cat || "unknown";
-  return CATEGORY_OF[grades.cat[p.rs] || p.dom] || "unknown";
+  return grades.cat.length ? CATS[grades.cat[p.rs]] || "unknown" : CATEGORY_OF[p.dom] || "unknown";
 }
 const HIT_PX = 7;
 function shownAtZoom(f) {
@@ -188,8 +193,9 @@ function gradeAll() {
   if (grades.key === key) return false;
   const steps = stayWindow(startTime(), stayMin || 1), grade = (pids) => evaluateStay({ curb_policy_ids: pids ? pids.split(",") : [] }, policies, steps, profile);
   if (mode === "tiles") {
-    let cat = "", fit = "";
-    for (const pids of rulesets) { const r = grade(pids); cat += CODES[r.worst] || "u"; fit += FIT_CODE[r.fit] || "o"; }
+    const catIx = Object.fromEntries(CATS.map((c, i) => [c, i])), unknown = catIx.unknown;
+    const cat = new Array(rulesets.length), fit = new Array(rulesets.length);
+    rulesets.forEach((pids, i) => { const r = grade(pids); cat[i] = catIx[r.worst] ?? unknown; fit[i] = FITS.indexOf(FIT_CODE[r.fit] || "o"); });
     grades = { key, cat, fit };
   } else {
     const byRules = new Map();
@@ -198,7 +204,7 @@ function gradeAll() {
       let r = byRules.get(pids); if (!r) byRules.set(pids, (r = grade(pids)));
       ft.properties.cat = r.worst; ft.properties.fit = FIT_CODE[r.fit] || "o";
     }
-    grades = { key, cat: "", fit: "" };
+    grades = { key, cat: [], fit: [] };
   }
   return true;
 }

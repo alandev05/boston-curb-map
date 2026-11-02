@@ -131,7 +131,7 @@ describe("rule engine against API data (the thing the map does)", () => {
     }
     // Tue 9am: sweeping, loading, meters, no-stopping, resident, accessible all present; nothing unknown.
     expect(counts.unknown ?? 0).toBe(0);
-    for (const k of ["no_parking", "loading", "paid", "no_stopping", "resident", "accessible"]) expect(counts[k], k).toBeGreaterThan(0);
+    for (const k of ["street_cleaning", "loading", "paid", "no_stopping", "resident", "accessible"]) expect(counts[k], k).toBeGreaterThan(0);
     // Rush hour zone becomes a travel lane at 5pm weekdays only.
     const rush = fc.features.find((f) => f.properties.curb_policy_ids.includes("pol-rush"));
     expect(verdict(rush.properties, pols, "wed", 17 * 60).category).toBe("travel");
@@ -176,17 +176,18 @@ describe.skipIf(!hasDist || !hasTiles)("static tiles mode over HTTP", () => {
     const { VectorTile } = await import("@mapbox/vector-tile"); const Pbf = (await import("pbf")).default;
     const tile = new VectorTile(new Pbf(new Uint8Array(await r.arrayBuffer())));
     expect(tile.layers.curbs.length).toBeGreaterThan(0);
-    expect(tile.layers.curbs.feature(0).properties.sched).toHaveLength(168);
+    expect(Number.isInteger(tile.layers.curbs.feature(0).properties.rs)).toBe(true);
   });
   it("manifest reports meters baked into the tiles", async () => {
     const m = await (await fetch(`${base}/data/manifest.json`)).json();
     expect(m.meters).toBeGreaterThan(1000);
   });
-  it("the bundle boots into tiles mode (reads the manifest, slices sched)", async () => {
+  it("the bundle boots into tiles mode (reads the manifest, slices the rule-set grades)", async () => {
     const html = await (await fetch(`${base}/`)).text();
     const js = html.match(/src="(\/assets\/[^"]+\.js)"/)[1];
     const bundle = await (await fetch(base + js)).text();
     expect(bundle).toMatch(/\/data\/manifest\.json/);
+    expect(bundle).toMatch(/\/data\/rulesets\.json/);
     expect(bundle).toMatch(/"slice"/);
   });
 });
@@ -194,7 +195,7 @@ describe.skipIf(!hasDist || !hasTiles)("static tiles mode over HTTP", () => {
 describe.skipIf(!hasDist)("built front-end is served", () => {
   it("index.html and the JS/CSS bundle load", async () => {
     const html = await (await fetch(`${base}/`)).text();
-    expect(html).toMatch(/Curb parking rules/);
+    expect(html).toMatch(/<title>Boston curb parking rules<\/title>/);
     const js = html.match(/src="(\/assets\/[^"]+\.js)"/)[1];
     const css = html.match(/href="(\/assets\/[^"]+\.css)"/)[1];
     const jr = await fetch(base + js); expect(jr.status).toBe(200); expect(jr.headers.get("content-type")).toMatch(/javascript/);
@@ -208,6 +209,6 @@ describe.skipIf(!hasDist)("built front-end is served", () => {
     expect((await fetch(base + css)).status).toBe(200);
   });
   it("unknown paths fall back to index.html (SPA)", async () => {
-    expect(await (await fetch(`${base}/some/deep/link`)).text()).toMatch(/Curb parking rules/);
+    expect(await (await fetch(`${base}/some/deep/link`)).text()).toMatch(/<title>Boston curb parking rules<\/title>/);
   });
 });

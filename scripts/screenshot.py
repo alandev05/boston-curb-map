@@ -35,8 +35,8 @@ INJECT = """() => new Promise(res => {
     const paint = { "fill-color": map.getPaintProperty("buildings", "fill-color"), "fill-outline-color": map.getPaintProperty("buildings", "fill-outline-color"), "fill-opacity": 0.9 };
     const rc = (id) => map.getPaintProperty(id, "line-color");
     const z = map.getZoom(), big = z >= 15;
-    map.addLayer({ id: "demo-st-outline", type: "line", source: "demo-st", layout: { "line-cap": "round" }, paint: { "line-color": rc("road-outline"), "line-width": ["case", ["get","major"], big ? 22 : 3, big ? 12 : 1.5] } }, "buildings");
-    map.addLayer({ id: "demo-st", type: "line", source: "demo-st", layout: { "line-cap": "round" }, paint: { "line-color": ["case", ["get","major"], rc("road-major"), rc("road-minor")], "line-width": ["case", ["get","major"], big ? 18 : 2, big ? 9 : 0.8] } }, "buildings");
+    map.addLayer({ id: "demo-st-outline", type: "line", source: "demo-st", layout: { "line-cap": "round" }, paint: { "line-color": rc("road-casing"), "line-width": ["case", ["get","major"], big ? 22 : 3, big ? 12 : 1.5] } }, "buildings");
+    map.addLayer({ id: "demo-st", type: "line", source: "demo-st", layout: { "line-cap": "round" }, paint: { "line-color": ["case", ["get","major"], rc("road"), rc("road")], "line-width": ["case", ["get","major"], big ? 18 : 2, big ? 9 : 0.8] } }, "buildings");
     map.addLayer({ id: "demo-bld", type: "fill", source: "demo-bld", paint }, "buildings");
     map.once("idle", res);
   };

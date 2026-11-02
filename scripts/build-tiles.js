@@ -2,9 +2,15 @@
 // Turn data/raw/{zones.geojson,policies.json} into static, gzipped vector tiles + a policies bundle:
 //   public/tiles/{z}/{x}/{y}.pbf   z9–15 (overzoomed to 20 by the client)
 //   public/data/policies.json       compact policy map for popups
+//   public/data/rulesets.json       every distinct set of rule ids, indexed by a feature's `rs`
 //   public/data/manifest.json       counts, timestamps, bbox, zoom range
-// Each feature carries a precomputed weekly schedule (`sched`, 168 chars) at detail zooms and
-// only the dominant category (`dom`) at overview zooms, so the city-scale tiles stay tiny.
+// Each feature carries `rs`, the index of its set of rule ids: the map grades each rule set once for the chosen
+// time and stay and colors tiles by looking `rs` up in the result, so nothing per curb is computed while zooming.
+// `dom` (the most common category over the week) is a fallback for a feature the browser hasn't graded.
+// Overview tiles (below DETAIL_ZOOM) carry only the curbs drawn there (long ones on major roads).
+// Curbs are snapped onto the basemap's OSM centerlines first (scripts/snap.js): `side` (+1/-1, 0 = unsnapped)
+// and `rc` (road class) let the map offset each one to its edge of the drawn road; `len` (m) drives
+// zoom-based disclosure (short hydrant/corner stubs only appear at street zooms).
 import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 import path from "node:path";
@@ -12,28 +18,34 @@ import { fileURLToPath } from "node:url";
 import geojsonvt from "geojson-vt";
 import vtpbf from "vt-pbf";
 import { encodeSchedule, dominant } from "../src/schedule.js";
+import { snapZones, lineLength } from "./snap.js";
+import { OVERVIEW_ROADS, OVERVIEW_MIN_LEN } from "../src/basemap.js";
+import { loadOsm } from "./osm-roads.js";
+import { parseCsv, assignSweeping } from "./sweeping.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IN = process.env.DATA_DIR || path.join(root, "data", "raw");
 const OUT = process.env.PUBLIC_DIR || path.join(root, "public");
-export const MIN_ZOOM = 9, MAX_ZOOM = 15, DETAIL_ZOOM = 12; // sched carried from DETAIL_ZOOM up
+export const MIN_ZOOM = 9, MAX_ZOOM = 15, DETAIL_ZOOM = 12; // full props and every curb from DETAIL_ZOOM up
 export const METERS_ZOOM = 13; // meter points appear from here
-const DETAIL_KEYS = ["id", "zone", "street", "side", "pids", "sched"];
 
 const lon2x = (lon, z) => Math.floor(((lon + 180) / 360) * 2 ** z);
 const lat2y = (lat, z) => Math.floor(((1 - Math.log(Math.tan((lat * Math.PI) / 180) + 1 / Math.cos((lat * Math.PI) / 180)) / Math.PI) / 2) * 2 ** z);
 
-export function prepare(features, policies) {
-  const out = [];
+// `rulesets` (in/out): distinct "id,id,…" strings; a feature's `rs` is its index here.
+export function prepare(features, policies, rulesets = []) {
+  const out = [], index = new Map(rulesets.map((r, i) => [r, i]));
   for (const f of features) {
     if (!f.geometry) continue;
     const p = f.properties || {};
-    const sched = encodeSchedule(p, policies);
+    const pids = (p.curb_policy_ids || []).join(",");
+    if (!index.has(pids)) { index.set(pids, rulesets.length); rulesets.push(pids); }
     out.push({
       type: "Feature", geometry: f.geometry,
       properties: {
-        id: p.curb_zone_id, zone: p.user_zone_id ?? "", street: p.street_name ?? "", side: p.street_side ?? "",
-        pids: (p.curb_policy_ids || []).join(","), sched, dom: dominant(sched),
+        id: p.curb_zone_id, zone: p.user_zone_id ?? "", street: p.street_name ?? "", ss: p.street_side ?? "",
+        rs: index.get(pids), dom: dominant(encodeSchedule(p, policies)),
+        side: p._side ?? 0, rc: p._rc ?? "", len: /LineString/.test(f.geometry.type) ? Math.round(lineLength(f.geometry.coordinates)) : 999,
       },
     });
   }
@@ -47,11 +59,17 @@ function bboxOf(features) {
   return [a, b, c, d];
 }
 
-export async function buildTiles(features, policies, { out = OUT, log = console.error, meta = {}, meters = [] } = {}) {
-  const prepared = prepare(features, policies);
+export async function buildTiles(features, policies, { out = OUT, log = console.error, meta = {}, meters = [], roads = null, buildings = null, names = null, numbers = null, sweeping = null } = {}) {
+  const snap = snapZones(features, roads, { buildings });
+  if (roads) log(`  snapped ${snap.snapped} of ${features.length} curbs onto road centerlines (${snap.stats.relaxed} on a second, looser pass, ${snap.stats.followed} by following a snapped neighbor); left in place: ${JSON.stringify(snap.stats.unsnapped)} (${snap.stats.clamped} pulled onto the nearest road edge); hidden inside intersections: ${snap.stats.hiddenInIntersection}; hidden (would cross a building, no road): ${snap.stats.hiddenThroughBuildings}`);
+  // Street sweeping (city table, no geometry) joins onto the curbs as drawn; adds `sweep-*` policies.
+  policies = { ...policies };
+  const sweep = sweeping?.length && names?.length ? assignSweeping(snap.features, policies, sweeping, { names, numbers }, { log }) : null;
+  const rulesets = [], prepared = prepare(snap.features, policies, rulesets);
   const bbox = bboxOf(prepared);
-  // Two indexes: full (detail zooms) and slim (overview zooms, props stripped to dom + id).
-  const slim = prepared.map((f) => ({ ...f, properties: { id: f.properties.id, dom: f.properties.dom } }));
+  // Two indexes: full (detail zooms) and slim (overview zooms: only the curbs drawn there, props stripped to what the style reads).
+  const slim = prepared.filter((f) => OVERVIEW_ROADS.includes(f.properties.rc) && f.properties.len >= OVERVIEW_MIN_LEN)
+    .map((f) => ({ ...f, properties: { id: f.properties.id, rs: f.properties.rs, dom: f.properties.dom, side: f.properties.side, rc: f.properties.rc, len: f.properties.len } }));
   const opts = { maxZoom: MAX_ZOOM, indexMaxZoom: MAX_ZOOM, indexMaxPoints: 0, tolerance: 3, extent: 4096, buffer: 64, lineMetrics: false };
   const full = geojsonvt({ type: "FeatureCollection", features: prepared }, opts);
   // tolerance 0: geojson-vt would otherwise cull curbs shorter than the tolerance at city scale, and
@@ -80,11 +98,12 @@ export async function buildTiles(features, policies, { out = OUT, log = console.
   }
   // Popup bundle: policies trimmed to what the UI reads.
   const slimPolicies = Object.fromEntries(Object.entries(policies).map(([id, p]) => [id, {
-    curb_policy_id: id, priority: p.priority, rules: (p.rules || []).map((r) => ({ activity: r.activity, max_stay: r.max_stay, user_classes: r.user_classes, purposes: r.purposes, rate: r.rate || r.rates })), time_spans: p.time_spans,
+    curb_policy_id: id, priority: p.priority, rules: (p.rules || []).map((r) => ({ activity: r.activity, max_stay: r.max_stay, max_stay_unit: r.max_stay_unit, user_classes: r.user_classes, user_classes_except: r.user_classes_except, purposes: r.purposes, rate: r.rate || r.rates })), rates: p.rates, time_spans: p.time_spans,
   }]));
   await mkdir(path.join(out, "data"), { recursive: true });
   await writeFile(path.join(out, "data", "policies.json"), JSON.stringify(slimPolicies));
-  const manifest = { ...meta, built_at: new Date().toISOString(), zones: prepared.length, policies: Object.keys(policies).length, meters: meters.length, meters_zoom: METERS_ZOOM, tiles: count, tile_bytes: bytes, bbox, minzoom: MIN_ZOOM, maxzoom: MAX_ZOOM, detail_zoom: DETAIL_ZOOM, tile_url: "/tiles/{z}/{x}/{y}.pbf" };
+  await writeFile(path.join(out, "data", "rulesets.json"), JSON.stringify(rulesets));
+  const manifest = { ...meta, snapped: snap.snapped, sweeping: sweep ? { rows: sweep.rows, matched: sweep.rowsMatched, curbs: sweep.curbsSwept } : null, built_at: new Date().toISOString(), zones: prepared.length, rulesets: rulesets.length, policies: Object.keys(policies).length, meters: meters.length, meters_zoom: METERS_ZOOM, tiles: count, tile_bytes: bytes, bbox, minzoom: MIN_ZOOM, maxzoom: MAX_ZOOM, detail_zoom: DETAIL_ZOOM, tile_url: "/tiles/{z}/{x}/{y}.pbf" };
   await writeFile(path.join(out, "data", "manifest.json"), JSON.stringify(manifest, null, 1));
   return manifest;
 }
@@ -95,6 +114,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const policies = JSON.parse(await readFile(path.join(IN, "policies.json"), "utf8"));
   const meta = JSON.parse(await readFile(path.join(IN, "meta.json"), "utf8").catch(() => "{}"));
   const meters = JSON.parse(await readFile(path.join(IN, "meters.geojson"), "utf8").catch(() => '{"features":[]}')).features;
-  const m = await buildTiles(fc.features, policies, { meta, meters });
+  const offline = process.argv.includes("--offline") || process.env.DATA_OFFLINE === "1";
+  const osm = process.env.NO_SNAP ? null : await loadOsm(bboxOf(fc.features.filter((f) => f.geometry)), { cacheDir: path.join(IN, "osm"), offline });
+  const sweeping = parseCsv(await readFile(path.join(IN, "sweeping.csv"), "utf8").catch(() => ""));
+  const m = await buildTiles(fc.features, policies, { meta, meters, roads: osm?.roads, buildings: osm?.buildings, names: osm?.names, numbers: osm?.numbers, sweeping });
   console.log(`built ${m.tiles} tiles (${(m.tile_bytes / 1024).toFixed(0)} KB gz) for ${m.zones} zones + ${m.meters} meters in ${((Date.now() - t) / 1000).toFixed(1)}s → ${OUT}`);
 }

@@ -8,7 +8,6 @@
   --muted: #8d93a1;
   --accent: #ffffff;
   --accent-text: #0d0f14;
-  --vignette: rgba(4, 5, 8, 0.7);
   --font: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, "Segoe UI", Roboto, Arial, sans-serif;
 }
 :root[data-theme="light"] {
@@ -20,12 +19,10 @@
   --muted: #6a7080;
   --accent: #15181f;
   --accent-text: #ffffff;
-  --vignette: rgba(120, 130, 150, 0.35);
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; font-family: var(--font); color: var(--text); background: var(--bg); -webkit-font-smoothing: antialiased; }
 #map { position: absolute; inset: 0; }
-#map::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse at 60% 45%, transparent 60%, var(--vignette) 100%); }
 
 /* ---------- panel ---------- */
 #panel {
@@ -39,24 +36,48 @@ html, body { margin: 0; height: 100%; font-family: var(--font); color: var(--tex
 #panel.collapsed { transform: translateX(calc(-100% - 40px)); }
 .titlebar { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 #panel h1 { font-weight: 300; font-size: 34px; letter-spacing: -0.5px; margin: 0; line-height: 1; }
-.sub { margin: 6px 0 0; font-size: 17px; font-weight: 300; color: var(--text); }
-.tag { margin: 4px 0 16px; font-size: 12px; color: var(--muted); line-height: 1.45; }
 .card { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
 .card h2 { font-size: 11px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: 1.6px; color: var(--muted); font-weight: 500; }
 .row { display: flex; gap: 10px; align-items: center; }
 select { font: inherit; font-size: 14px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; background: var(--panel-2); color: var(--text); cursor: pointer; }
 .ghost { font: inherit; font-size: 13px; font-weight: 500; border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; background: transparent; color: var(--text); cursor: pointer; transition: background .15s; }
 .ghost:hover { background: var(--panel-2); }
-#nowBtn { margin-top: 10px; }
-output { font-variant-numeric: tabular-nums; font-weight: 400; font-size: 15px; min-width: 56px; flex: 0 0 auto; text-align: right; white-space: nowrap; }
-input[type=range] { flex: 1 1 0; min-width: 0; accent-color: var(--accent); height: 28px; }
+#panel header { margin-bottom: 14px; }
+/* Time: one chip ("Now · Sat 4:12 PM"), the rest disclosed on demand. */
+.when-chip { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; font: inherit; font-size: 15px; font-weight: 500; color: var(--text); background: transparent; border: none; padding: 0; cursor: pointer; text-align: left; }
+.when-chip i { font-style: normal; font-size: 12px; color: var(--muted); transition: transform .2s; }
+.when-chip[aria-expanded="true"] i { transform: rotate(180deg); }
+.date-note { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+.date-note:empty { display: none; }
+.when-panel { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); display: grid; gap: 12px; }
+.when-panel[hidden] { display: none; }
+.field > span { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted); margin-bottom: 6px; }
+.field .row select { flex: 1 1 0; min-width: 0; }
+.stay-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.stay-chips button { font: inherit; font-size: 12.5px; font-weight: 500; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
+.stay-chips button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.stay-custom { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 13px; color: var(--muted); }
+.stay-custom[hidden] { display: none; }
+.stay-custom input { width: 72px; font: inherit; font-size: 14px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); }
+.link { justify-self: start; font: inherit; font-size: 13px; color: var(--text); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.link[hidden] { display: none; }
+.stay-key { margin: 10px 0 0; font-size: 11.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.stay-key[hidden] { display: none; }
+.stay-key span { display: inline-block; width: 18px; height: 4px; border-radius: 2px; background: var(--muted); }
+.stay-key .k-fade { opacity: .3; }
+.stay-key .k-dots { margin-left: 8px; background: repeating-linear-gradient(90deg, var(--muted) 0 6px, var(--bg) 6px 8px, var(--muted) 8px 14px); }
+.chip.on { background: var(--panel-2); border-color: var(--text); }
+.timeline { list-style: none; margin: 0 0 10px; padding: 0; font-size: 12.5px; }
+.timeline li { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.timeline li i { width: 14px; height: 4px; border-radius: 2px; background: var(--c); flex: none; }
+.timeline li span { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 128px; }
+.rules li b .free { color: var(--text); font-weight: 600; }
 
 .legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { display: inline-flex; align-items: center; gap: 7px; font: inherit; font-size: 12px; font-weight: 500; padding: 5px 10px 5px 7px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--text); cursor: pointer; transition: background .15s, opacity .15s; }
-.chip i { width: 10px; height: 10px; border-radius: 50%; background: var(--c); box-shadow: 0 0 8px var(--c); }
+.chip i { width: 14px; height: 4px; border-radius: 2px; background: var(--c); }
 .chip:hover { background: var(--panel-2); }
 .chip.off { opacity: .35; }
-.chip.off i { box-shadow: none; }
 .toggle { display: flex; align-items: center; gap: 9px; font-size: 13.5px; padding: 4px 0; cursor: pointer; }
 .toggle input { width: 16px; height: 16px; accent-color: var(--accent); }
 
@@ -87,6 +108,7 @@ footer a { color: var(--text); }
 .rules li span { color: var(--muted); }
 .rules li.on { border-left-color: var(--text); background: var(--panel-2); border-radius: 0 6px 6px 0; }
 .rules li.dim { opacity: .5; }
+.rules li.overridden { border-left-style: dashed; font-size: 11.5px; }
 .rules li em { position: absolute; right: 8px; top: 6px; font-style: normal; font-size: 10px; border: 1px solid var(--line); border-radius: 5px; padding: 0 4px; color: var(--muted); }
 
 /* ---------- maplibre chrome ---------- */

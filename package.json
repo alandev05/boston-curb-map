@@ -16,7 +16,8 @@
     "data": "node scripts/data.js",
     "data:offline": "node scripts/data.js --offline",
     "data:mock": "CDS_BASE=http://localhost:4321 RPS=200 node scripts/data.js",
-    "build:site": "vite build"
+    "build:site": "vite build",
+    "audit": "node scripts/audit-curbs.js"
   },
   "dependencies": {
     "geojson-vt": "^4.0.3",

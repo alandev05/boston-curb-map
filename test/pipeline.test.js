@@ -13,20 +13,20 @@ import { POLICIES, ZONES, METERS } from "../scripts/mock-cds.js";
 const toFeature = (z) => { const { geometry, ...properties } = z; return { type: "Feature", geometry, properties }; };
 
 describe("schedule encoding", () => {
-  it("is 168 chars, mon..sun × 24, and agrees with verdict() at every slot", () => {
+  it("is 336 chars, mon..sun × 48 half hours, and agrees with verdict() at every slot", () => {
     const z = ZONES.find((x) => x.curb_policy_ids.includes("pol-rush"));
     const s = encodeSchedule(z, POLICIES);
     expect(s).toHaveLength(SLOTS);
     for (const day of DAYS) for (let h = 0; h < 24; h++) {
-      expect(CATEGORY_OF[s[slotIndex(day, h)]]).toBe(verdict(z, POLICIES, day, h * 60).category);
+      expect(CATEGORY_OF[s[slotIndex(day, h * 60)]]).toBe(verdict(z, POLICIES, day, h * 60 + 15).category);
     }
   });
   it("rush-hour zone reads travel Wed 5pm, paid Wed 1pm, resident Sun 5pm", () => {
     const z = ZONES.find((x) => x.curb_policy_ids.includes("pol-rush"));
     const s = encodeSchedule(z, POLICIES);
-    expect(s[slotIndex("wed", 17)]).toBe(CODES.travel);
-    expect(s[slotIndex("wed", 13)]).toBe(CODES.paid);
-    expect(s[slotIndex("sun", 17)]).toBe(CODES.resident);
+    expect(s[slotIndex("wed", 17 * 60)]).toBe(CODES.travel);
+    expect(s[slotIndex("wed", 13 * 60)]).toBe(CODES.paid);
+    expect(s[slotIndex("sun", 17 * 60)]).toBe(CODES.resident);
   });
   it("every category has a unique single-letter code", () => {
     const codes = Object.values(CODES);
@@ -46,12 +46,20 @@ describe("schedule encoding", () => {
 });
 
 describe("prepare()", () => {
-  it("flattens zone props into short tile keys + sched + dom", () => {
-    const f = prepare([toFeature(ZONES[0])], POLICIES)[0];
-    expect(Object.keys(f.properties).sort()).toEqual(["dom", "id", "pids", "sched", "side", "street", "zone"]);
+  it("flattens zone props into short tile keys + a rule-set index + dom", () => {
+    const rulesets = [];
+    const f = prepare([toFeature(ZONES[0])], POLICIES, rulesets)[0];
+    expect(Object.keys(f.properties).sort()).toEqual(["dom", "id", "len", "rc", "rs", "side", "ss", "street", "zone"]);
     expect(f.properties.id).toBe(ZONES[0].curb_zone_id);
-    expect(f.properties.pids).toBe(ZONES[0].curb_policy_ids.join(","));
-    expect(f.properties.sched).toHaveLength(168);
+    expect(rulesets[f.properties.rs]).toBe(ZONES[0].curb_policy_ids.join(","));
+    expect(f.properties.dom).toHaveLength(1);
+  });
+  it("curbs with the same rules share one rule-set index", () => {
+    const rulesets = [];
+    const [a, b, c] = prepare([toFeature(ZONES[0]), toFeature(ZONES[0]), toFeature({ ...ZONES[0], curb_policy_ids: [] })], POLICIES, rulesets);
+    expect(a.properties.rs).toBe(b.properties.rs);
+    expect(c.properties.rs).not.toBe(a.properties.rs);
+    expect(rulesets).toHaveLength(2);
   });
   it("drops zones with no geometry", () => {
     expect(prepare([{ properties: { curb_zone_id: "x" }, geometry: null }], POLICIES)).toHaveLength(0);
@@ -60,7 +68,8 @@ describe("prepare()", () => {
 
 describe("buildTiles()", () => {
   let out, manifest;
-  const subset = ZONES.slice(0, 600).map(toFeature);
+  // Every other curb sits on a primary road (as if snapped), so the overview zooms have something to carry.
+  const subset = ZONES.slice(0, 600).map(toFeature).map((f, i) => (i % 2 ? f : { ...f, properties: { ...f.properties, _rc: "primary", _side: 1 } }));
   beforeAll(async () => {
     out = await mkdtemp(path.join(os.tmpdir(), "curb-tiles-"));
     const meters = METERS.slice(0, 200).map((m) => ({ type: "Feature", geometry: { type: "Point", coordinates: [Number(m.LONGITUDE), Number(m.LATITUDE)] }, properties: { METER_ID: m.METER_ID, STREET: m.STREET } }));
@@ -99,20 +108,21 @@ describe("buildTiles()", () => {
     expect(tile.layers.curbs).toBeDefined();
     expect(tile.layers.curbs.extent).toBe(4096);
     const f = tile.layers.curbs.feature(0);
-    expect(f.properties.sched).toHaveLength(168);
+    expect(Number.isInteger(f.properties.rs)).toBe(true);
     expect(f.properties.id).toMatch(/^bos-/);
     expect(f.properties.dom).toHaveLength(1);
   });
-  it("overview tiles carry only id + dom (no 168-char sched) so the city-scale tile stays small", async () => {
+  it("overview tiles carry only the curbs drawn there (long, on major roads), with id + rs + dom + disclosure keys", async () => {
     const z = String(MIN_ZOOM);
     const ids = new Set(); let bytes = 0;
     for (const x of await readdir(path.join(out, "tiles", z))) for (const y of await readdir(path.join(out, "tiles", z, x))) {
       const buf = await readFile(path.join(out, "tiles", z, x, y)); bytes += buf.length;
       const layer = new VectorTile(new Pbf(gunzipSync(buf))).layers.curbs;
-      expect(Object.keys(layer.feature(0).properties).sort()).toEqual(["dom", "id"]);
-      for (let i = 0; i < layer.length; i++) ids.add(layer.feature(i).properties.id);
+      expect(Object.keys(layer.feature(0).properties).sort()).toEqual(["dom", "id", "len", "rc", "rs", "side"]);
+      for (let i = 0; i < layer.length; i++) { const p = layer.feature(i).properties; expect(p.rc).toBe("primary"); expect(p.len).toBeGreaterThanOrEqual(25); ids.add(p.id); }
     }
-    expect(ids.size).toBe(600); // every zone present at city scale — none culled by simplification
+    const expected = prepare(subset, POLICIES).filter((f) => f.properties.rc === "primary" && f.properties.len >= 25).length;
+    expect(ids.size).toBe(expected); // none culled by simplification
     expect(bytes).toBeLessThan(20000);
   });
   it("detail tiles collectively contain every zone exactly once per tile", async () => {
@@ -124,6 +134,11 @@ describe("buildTiles()", () => {
       for (let i = 0; i < layer.length; i++) { const id = layer.feature(i).properties.id; expect(seen.has(id)).toBe(false); seen.add(id); ids.add(id); }
     }
     expect(ids.size).toBe(600);
+  });
+  it("writes the rule sets the tiles index into", async () => {
+    const rs = JSON.parse(await readFile(path.join(out, "data", "rulesets.json"), "utf8"));
+    expect(rs).toContain(ZONES[0].curb_policy_ids.join(","));
+    expect(manifest.rulesets).toBe(rs.length);
   });
   it("writes a slim policies bundle", async () => {
     const pol = JSON.parse(await readFile(path.join(out, "data", "policies.json"), "utf8"));

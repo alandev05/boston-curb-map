@@ -3,7 +3,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import "./style.css";
 import { CATEGORIES, verdict, fmtRate, fmtSpan, dayKey, isRealPolicy, isMetered, isStreetCleaning, ruleOf, collapsePolicies, overriddenBy, catColor, shade, cityHoliday, stayWindow, evaluateStay } from "./rules.js";
 import { DEMO_ZONES, DEMO_POLICIES } from "./demo.js";
-import { buildStyle, curbPaint, LABEL_LAYERS, METER_LAYERS, CURB_LAYERS } from "./basemap.js";
+import { buildStyle, curbPaint, LABEL_LAYERS, METER_LAYERS, CURB_LAYERS, DETAIL_ZOOM, NO_DATA_ZOOM, OVERVIEW_ROADS, OVERVIEW_MIN_LEN } from "./basemap.js";
 import { CODES, CATEGORY_OF, SLOT_MIN } from "./schedule.js";
 
 const $ = (s) => document.querySelector(s);
@@ -136,7 +136,7 @@ map.on("load", () => {
   }
   let hoverId = null;
   // Curb lines are only a few px wide, so hit-test with a tolerance box like Google does, skipping curbs the
-  // current zoom or legend hides (no-data below 15, short stubs below 14).
+  // current zoom or legend hides (no-data below NO_DATA_ZOOM, side streets below DETAIL_ZOOM).
   map.on("mousemove", (e) => {
     const f = pickCurb(e.point);
     map.getCanvas().style.cursor = f ? "pointer" : "";
@@ -159,8 +159,8 @@ function drawnCat(f) {
 const HIT_PX = 7;
 function shownAtZoom(f) {
   const z = map.getZoom(), cat = drawnCat(f);
-  if (cat === "unknown" && z < 15) return false;
-  if ((f.properties.len ?? 999) < 20 && z < 14) return false;
+  if (cat === "unknown" && z < NO_DATA_ZOOM) return false;
+  if (z < DETAIL_ZOOM && !(OVERVIEW_ROADS.includes(f.properties.rc) && (f.properties.len ?? 999) >= OVERVIEW_MIN_LEN)) return false;
   if (selected.size && !selected.has(cat)) return false;
   return true;
 }
@@ -429,7 +429,7 @@ function zoneFromFeature(feature) {
   if (mode === "tiles") {
     const p = feature.properties;
     const pids = rulesets[p.rs] || "";
-    return { curb_zone_id: p.id, user_zone_id: p.zone, street_name: p.street, street_side: p.ss, curb_policy_ids: pids ? pids.split(",") : [] };
+    return { curb_zone_id: feature.id, curb_policy_ids: pids ? pids.split(",") : [] };
   }
   return zones.get(feature.id)?.properties || feature.properties;
 }

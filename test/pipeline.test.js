@@ -6,8 +6,8 @@ import path from "node:path";
 import { VectorTile } from "@mapbox/vector-tile";
 import Pbf from "pbf";
 import { encodeSchedule, dominant, slotIndex, codeAt, CODES, CATEGORY_OF, DAYS, SLOTS } from "../src/schedule.js";
-import { verdict } from "../src/rules.js";
-import { prepare, buildTiles, MIN_ZOOM, MAX_ZOOM, DETAIL_ZOOM, METERS_ZOOM } from "../scripts/build-tiles.js";
+import { verdict, isRealPolicy } from "../src/rules.js";
+import { prepare, buildTiles, MIN_ZOOM, MAX_ZOOM, DETAIL_ZOOM, NO_DATA_ZOOM, METERS_ZOOM } from "../scripts/build-tiles.js";
 import { POLICIES, ZONES, METERS } from "../scripts/mock-cds.js";
 
 const toFeature = (z) => { const { geometry, ...properties } = z; return { type: "Feature", geometry, properties }; };
@@ -49,8 +49,8 @@ describe("prepare()", () => {
   it("flattens zone props into short tile keys + a rule-set index + dom", () => {
     const rulesets = [];
     const f = prepare([toFeature(ZONES[0])], POLICIES, rulesets)[0];
-    expect(Object.keys(f.properties).sort()).toEqual(["dom", "id", "len", "rc", "rs", "side", "ss", "street", "zone"]);
-    expect(f.properties.id).toBe(ZONES[0].curb_zone_id);
+    expect(Object.keys(f.properties).sort()).toEqual(["dom", "len", "rc", "rs", "side"]);
+    expect(f.id).toBe(0); // a small integer feature id, not the city's 36-character one
     expect(rulesets[f.properties.rs]).toBe(ZONES[0].curb_policy_ids.join(","));
     expect(f.properties.dom).toHaveLength(1);
   });
@@ -69,6 +69,8 @@ describe("prepare()", () => {
 describe("buildTiles()", () => {
   let out, manifest;
   // Every other curb sits on a primary road (as if snapped), so the overview zooms have something to carry.
+  // Curbs (as prepare() numbers them) with at least one readable rule — what the tiles below NO_DATA_ZOOM carry.
+  const ruled = () => { const rs = []; return prepare(subset, POLICIES, rs).filter((f) => rs[f.properties.rs].split(",").some((id) => isRealPolicy(POLICIES[id]))); };
   const subset = ZONES.slice(0, 600).map(toFeature).map((f, i) => (i % 2 ? f : { ...f, properties: { ...f.properties, _rc: "primary", _side: 1 } }));
   beforeAll(async () => {
     out = await mkdtemp(path.join(os.tmpdir(), "curb-tiles-"));
@@ -109,31 +111,39 @@ describe("buildTiles()", () => {
     expect(tile.layers.curbs.extent).toBe(4096);
     const f = tile.layers.curbs.feature(0);
     expect(Number.isInteger(f.properties.rs)).toBe(true);
-    expect(f.properties.id).toMatch(/^bos-/);
+    expect(Number.isInteger(f.id)).toBe(true);
     expect(f.properties.dom).toHaveLength(1);
   });
-  it("overview tiles carry only the curbs drawn there (long, on major roads), with id + rs + dom + disclosure keys", async () => {
+  it("overview tiles carry only the curbs drawn there (long, with rules, on major roads), with rs + dom + disclosure keys", async () => {
     const z = String(MIN_ZOOM);
     const ids = new Set(); let bytes = 0;
     for (const x of await readdir(path.join(out, "tiles", z))) for (const y of await readdir(path.join(out, "tiles", z, x))) {
       const buf = await readFile(path.join(out, "tiles", z, x, y)); bytes += buf.length;
       const layer = new VectorTile(new Pbf(gunzipSync(buf))).layers.curbs;
-      expect(Object.keys(layer.feature(0).properties).sort()).toEqual(["dom", "id", "len", "rc", "rs", "side"]);
-      for (let i = 0; i < layer.length; i++) { const p = layer.feature(i).properties; expect(p.rc).toBe("primary"); expect(p.len).toBeGreaterThanOrEqual(25); ids.add(p.id); }
+      expect(Object.keys(layer.feature(0).properties).sort()).toEqual(["dom", "len", "rc", "rs", "side"]);
+      for (let i = 0; i < layer.length; i++) { const f = layer.feature(i), p = f.properties; expect(p.rc).toBe("primary"); expect(p.len).toBeGreaterThanOrEqual(25); ids.add(f.id); }
     }
-    const expected = prepare(subset, POLICIES).filter((f) => f.properties.rc === "primary" && f.properties.len >= 25).length;
+    const expected = ruled().filter((f) => f.properties.rc === "primary" && f.properties.len >= 25).length;
     expect(ids.size).toBe(expected); // none culled by simplification
     expect(bytes).toBeLessThan(20000);
   });
-  it("detail tiles collectively contain every zone exactly once per tile", async () => {
-    const ids = new Set();
-    const z = String(DETAIL_ZOOM);
+  const idsAt = async (zoom) => {
+    const ids = new Set(), z = String(zoom);
     for (const x of await readdir(path.join(out, "tiles", z))) for (const y of await readdir(path.join(out, "tiles", z, x))) {
       const layer = new VectorTile(new Pbf(gunzipSync(await readFile(path.join(out, "tiles", z, x, y))))).layers.curbs;
       const seen = new Set();
-      for (let i = 0; i < layer.length; i++) { const id = layer.feature(i).properties.id; expect(seen.has(id)).toBe(false); seen.add(id); ids.add(id); }
+      for (let i = 0; i < layer?.length; i++) { const id = layer.feature(i).id; expect(seen.has(id)).toBe(false); seen.add(id); ids.add(id); }
     }
-    expect(ids.size).toBe(600);
+    return ids;
+  };
+  it("from NO_DATA_ZOOM the tiles contain every zone, exactly once per tile", async () => {
+    expect((await idsAt(NO_DATA_ZOOM)).size).toBe(600);
+    expect((await idsAt(MAX_ZOOM)).size).toBe(600);
+  });
+  it("from DETAIL_ZOOM to NO_DATA_ZOOM they carry every curb with a readable rule, and only those", async () => {
+    const want = new Set(ruled().map((f) => f.id));
+    expect(want.size).toBeGreaterThan(0);
+    for (const z of [DETAIL_ZOOM, NO_DATA_ZOOM - 1]) expect([...(await idsAt(z))].sort()).toEqual([...want].sort());
   });
   it("writes the rule sets the tiles index into", async () => {
     const rs = JSON.parse(await readFile(path.join(out, "data", "rulesets.json"), "utf8"));

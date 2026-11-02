@@ -88,7 +88,9 @@ const roadRank = ["match", ["get", "class"], ...CLASSES.flatMap((c) => [c, ROADS
 // gateExpr: a 0–1 multiplier per curb from the UI — 0 for categories filtered out in the legend, and a fade for curbs
 // that won't last a chosen stay. betterExpr: true for curbs that get better during the stay; they carry a dotted
 // stripe (zone-better) down the middle of the line.
-// Below the detail zoom only curbs on major roads, at least this long, are drawn; the overview tiles carry nothing else.
+// Below DETAIL_ZOOM (the whole-region view) only curbs on major roads, at least this long, are drawn, and the
+// overview tiles carry nothing else. From DETAIL_ZOOM every curb with rules shows; "no data" curbs join, dimmed, at 14.
+export const DETAIL_ZOOM = 11, NO_DATA_ZOOM = 14;
 export const OVERVIEW_ROADS = ["motorway", "trunk", "primary", "secondary"], OVERVIEW_MIN_LEN = 25;
 export function curbPaint(theme, { colorExpr = "#888", dimExpr = false, gateExpr = 1, betterExpr = false } = {}) {
   const P = PALETTES[theme] || PALETTES.dark;
@@ -97,9 +99,8 @@ export function curbPaint(theme, { colorExpr = "#888", dimExpr = false, gateExpr
   const g = (v) => (gateExpr === 1 ? v : ["*", gateExpr, v]);
   const shown = ["step", ["zoom"],
     g(["case", ["all", major, [">=", len, OVERVIEW_MIN_LEN], ["!", dimExpr]], 1, 0]),
-    12, g(["case", ["all", [">=", len, 20], ["!", dimExpr]], 1, 0]),
-    14, g(["case", dimExpr, 0, 1]),
-    15, g(["case", dimExpr, P.dimOpacity, 1])];
+    DETAIL_ZOOM, g(["case", dimExpr, 0, 1]),
+    NO_DATA_ZOOM, g(["case", dimExpr, P.dimOpacity, 1])];
   const side = ["coalesce", ["get", "side"], 0];
   const width = (k) => ["interpolate", ["exponential", 2], ["zoom"], ...CURB_W.flatMap(([z, w]) => [z, ["case", dimExpr, Math.max(0.6, +(w * 0.6 * k).toFixed(2)), +(w * k).toFixed(2)]])];
   const offset = ["interpolate", ["exponential", 2], ["zoom"], ...ZOOMS.filter((z) => z >= 9).flatMap((z) => [z, ["*", side, byClassZoom("rc", curbOffsetPx, [z]).at(-1)]])];
@@ -120,7 +121,7 @@ export function buildStyle(theme, { colorExpr, dimExpr, gateExpr, betterExpr, ti
   const paint = curbPaint(theme, { colorExpr: colorExpr || "#888", dimExpr, gateExpr, betterExpr });
   const curb = tiles ? { source: "curbs", "source-layer": "curbs" } : { source: "zones" };
   const curbSource = tiles
-    ? { curbs: { type: "vector", tiles: [tiles.url], minzoom: tiles.minzoom, maxzoom: tiles.maxzoom, bounds: tiles.bounds, promoteId: { curbs: "id" } } }
+    ? { curbs: { type: "vector", tiles: [tiles.url], minzoom: tiles.minzoom, maxzoom: tiles.maxzoom, bounds: tiles.bounds } }
     : { zones: { type: "geojson", data: { type: "FeatureCollection", features: [] }, promoteId: "curb_zone_id" } };
   // Meters: a point layer inside the same tiles when the build included them, else the runtime GeoJSON source.
   const meter = tiles?.meters ? { source: "curbs", "source-layer": "meters" } : { source: "meters" };

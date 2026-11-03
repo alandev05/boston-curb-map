@@ -62,6 +62,13 @@ describe("assignMeters", () => {
     expect(ids).toContain("~resident");
     expect(ids).toContain("cleaning");
   });
+  it("pieces of a curb cut by a community correction keep the whole curb's meters and length", () => {
+    // 0–20 m and 45–93 m of one 93 m curb; the only meter stands beside the second piece.
+    const piece = (x0, x1) => ({ ...zone("a", x0, x1, ["hydrant", "feedMeter"]), properties: { curb_zone_id: "a", curb_policy_ids: ["hydrant", "feedMeter"], _rawLen: 93 } });
+    const { features } = run([piece(0, 20), piece(45, 93)], [meter(70)]);
+    expect(features[0].properties.curb_policy_ids).toContain("~hydrant");
+    expect(features[0].properties.curb_policy_ids.some((id) => id.startsWith("meter-"))).toBe(true);
+  });
   it("adds the meter's tow-away hours as no stopping", () => {
     const { features, pols } = run([zone("a", 0, 60, [])], [meter(20, { TOW_AWAY: "04:00PM-06:00PM MON-FRI" })]);
     expect(verdict(features[0].properties, pols, "wed", 17 * 60).category).toBe("no_stopping");

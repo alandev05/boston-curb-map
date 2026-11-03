@@ -16,6 +16,7 @@ const run = (script) => spawnSync(process.execPath, [path.join(root, "scripts", 
 
 if (!offline && !run("fetch-meters.js")) console.error("fetch-meters failed; tiles will carry whatever data/raw/meters.geojson exists");
 if (!offline && !run("fetch-sweeping.js")) console.error("fetch-sweeping failed; tiles will use whatever data/raw/sweeping.csv exists");
+if (!offline && !run("fetch-submissions.js")) console.error("fetch-submissions failed; tiles will use whatever data/raw/submissions.json exists");
 if (!offline && !run("fetch-cds.js")) console.error("fetch-cds failed; " + (existsSync(raw) ? "tiling the cached data/raw instead" : "no cached data — site will use the runtime API"));
 if (existsSync(raw)) {
   if (!run("build-tiles.js")) { console.error("build-tiles failed; removing stale tiles"); await rm(path.join(root, "public", "tiles"), { recursive: true, force: true }); await rm(path.join(root, "public", "data"), { recursive: true, force: true }); }

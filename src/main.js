@@ -3,6 +3,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import "./style.css";
 import { CATEGORIES, verdict, daySchedule, policyActive, fmtSpanShort, fmtTime, fmtRate, fmtSpan, dayKey, isRealPolicy, isStreetCleaning, ruleOf, collapsePolicies, overriddenBy, reasonOf, catColor, shade, cityHoliday, stayWindow, evaluateStay } from "./rules.js";
 import { DEMO_ZONES, DEMO_POLICIES } from "./demo.js";
+import { createEditor } from "./editor.js";
 import { buildStyle, curbPaint, CURB_LAYERS, CURB_FADE_ZOOM, CURB_ZOOM, NO_DATA_ZOOM } from "./basemap.js";
 import { CODES, CATEGORY_OF, SLOT_MIN } from "./schedule.js";
 
@@ -102,10 +103,13 @@ await detectMode();
 // [w, s, e, n] grown by a margin (degrees), as MapLibre's [[w, s], [e, n]].
 function padBounds([w, s, e, n], dx = 0.06, dy = 0.04) { return [[w - dx, s - dy], [e + dx, n + dy]]; }
 
+// ?at=<lng>,<lat> opens on one spot at street zoom (the review page links curbs this way).
+const AT = new URLSearchParams(location.search).get("at")?.split(",").map(Number);
+const atSpot = AT?.length === 2 && AT.every(Number.isFinite) ? AT : null;
 const map = new maplibregl.Map({
   container: "map",
-  center: [-71.07, 42.35], // central Boston, at a zoom where curbs are drawn (they start at CURB_FADE_ZOOM)
-  zoom: 12.6,
+  center: atSpot || [-71.07, 42.35], // central Boston, at a zoom where curbs are drawn (they start at CURB_FADE_ZOOM)
+  zoom: atSpot ? 18.5 : 12.6,
   // Boston only: the view can't leave the curb data's area (plus a margin), which also caps how far out you can
   // zoom — about the whole city on a laptop screen. minZoom is a floor for very small screens.
   maxBounds: padBounds(mode === "tiles" && manifest?.bbox ? manifest.bbox : CITY_BBOX),
@@ -147,7 +151,7 @@ map.on("load", () => {
     hoverId = id;
     if (id !== null) map.setFeatureState({ ...curbSource(), id }, { hover: true });
   });
-  map.on("click", (e) => { const f = pickCurb(e.point); if (phone.matches) setSheet(false); f ? showPopup(f, e.lngLat) : hidePopup(); });
+  map.on("click", (e) => { if (editor.editing) return; const f = pickCurb(e.point); if (phone.matches) setSheet(false); f ? showPopup(f, e.lngLat) : hidePopup(); }); // editing: map taps don't lose the draft
 });
 
 const curbSource = () => (mode === "tiles" ? { source: "curbs", sourceLayer: "curbs" } : { source: "zones" });
@@ -536,6 +540,26 @@ function ruleBits(pol) {
 }
 const spansText = (pol) => (pol.time_spans || []).map(fmtSpan).join("; ") || "Every day, all day";
 
+// One day of a curb as agenda rows: one per stretch of time, the one holding `minute` marked (null: none marked).
+// Used by the popup, the editor's preview and pending corrections. `generic`: a weekday in general (opts.day), not the
+// date `t` (no holidays, every-other-week rules shown as in force).
+function scheduleRows(zone, pols, t, minute = null, { day: weekday, generic = false } = {}) {
+  const day = weekday || dayKey(t), hol = generic ? null : cityHoliday(t), meterFree = day === "sun" || !!hol;
+  const clock = (m) => fmtTime(`${Math.floor(m / 60)}:${m % 60}`);
+  const blockLabel = ({ v: b }) => {
+    if (b.category === "accessible_permit") return "Accessible space · resident permit also posted";
+    if (!b.policy) return "No posted rule";
+    if (b.meterFree) return `Free parking${hol ? ` (${esc(hol)})` : day === "sun" ? " (Sunday)" : ""}`;
+    const bits = ruleBits(b.policy);
+    if (b.category === "free" && bits[0] === "Parking") bits[0] = "Free parking";
+    return bits.join(" · ");
+  };
+  return daySchedule(zone, pols, day, generic ? undefined : t, { meterFree }).map((b) => {
+    const on = minute != null && minute >= b.from && minute < b.to;
+    return `<li class="${on ? "on" : ""}${b.v.policy ? "" : " none"}" style="--c:${catColor(b.v.category, theme)}"><span>${b.from === 0 && b.to === 1440 ? "All day" : `${clock(b.from)} – ${clock(b.to)}`}</span><b>${blockLabel(b)}</b>${on ? `<em>${live ? "Now" : fmtClock(t)}</em>` : ""}</li>`;
+  }).join("");
+}
+
 function showPopup(feature, lngLat) {
   const p = zoneFromFeature(feature);
   const t = startTime(), day = dayKey(t), minute = minuteOf(t);
@@ -543,21 +567,8 @@ function showPopup(feature, lngLat) {
   const v = verdict(p, policies, day, minute, { meterFree, date: t });
   const category = v.category, cat = CATEGORIES[category], blurb = cat.blurb;
   // The selected day in order: one row per stretch of time, the one at the chosen time marked.
-  const blocks = daySchedule(p, policies, day, t, { meterFree });
-  const clock = (m) => fmtTime(`${Math.floor(m / 60)}:${m % 60}`);
-  const blockLabel = ({ v: b }) => {
-    if (b.category === "accessible_permit") return "Accessible space · resident permit also posted";
-    if (!b.policy) return "No posted rule";
-    if (b.meterFree) return `Free${hol ? ` (${esc(hol)})` : day === "sun" ? " (Sunday)" : ""}`;
-    const bits = ruleBits(b.policy);
-    if (b.category === "free" && bits[0] === "Parking") bits[0] = "Free parking";
-    return bits.join(" · ");
-  };
   const hasRules = (p.curb_policy_ids || []).some((id) => policies[id] && isRealPolicy(policies[id]));
-  const rows = !hasRules ? "" : blocks.map((b) => {
-    const on = minute >= b.from && minute < b.to;
-    return `<li class="${on ? "on" : ""}${b.v.policy ? "" : " none"}" style="--c:${catColor(b.v.category, theme)}"><span>${b.from === 0 && b.to === 1440 ? "All day" : `${clock(b.from)} – ${clock(b.to)}`}</span><b>${blockLabel(b)}</b>${on ? `<em>${live ? "Now" : fmtClock(t)}</em>` : ""}</li>`;
-  }).join("");
+  const rows = hasRules ? scheduleRows(p, policies, t, minute) : "";
   // Rules not in force at any time this day (other weekdays, other months, snow emergencies): one tag each.
   const all = (p.curb_policy_ids || []).map((id) => policies[id]).filter((pol) => pol && isRealPolicy(pol));
   const today = (pol) => Array.from({ length: 48 }, (_, k) => k * 30).some((m) => policyActive(pol, day, m, t));
@@ -577,7 +588,9 @@ function showPopup(feature, lngLat) {
     ${title ? `<h3>${esc(title)}</h3>` : ""}
     <div class="meta">${p.user_zone_id ? `Zone #${esc(p.user_zone_id)} · ` : ""}${fmtDay(t)} · ${fmtClock(t)}${demoMode ? " · <b>demo data</b>" : ""}</div>
     ${rows ? `<ul class="agenda">${rows}</ul>` : `<p class="empty">No sign data recorded for this curb.</p>`}
-    ${tags || partial ? `<ul class="tags">${partial}${tags}</ul>` : ""}`;
+    ${tags || partial ? `<ul class="tags">${partial}${tags}</ul>` : ""}
+    ${mode === "tiles" ? `<div class="curb-actions"></div>` : ""}`;
+  if (mode === "tiles") editor.actions($("#popup .curb-actions"), feature, p, () => showPopup(feature, lngLat), lngLat);
   $("#popup").classList.remove("hidden");
   document.body.classList.add("popup-open");
   syncSheetHeight();
@@ -597,8 +610,16 @@ function showPopup(feature, lngLat) {
 }
 let keepPopup = false;
 function hidePopup() {
+  editor.close();
   $("#popup").classList.add("hidden"); select(null);
   document.body.classList.remove("popup-open");
   syncSheetHeight();
 }
-map.on("move", () => keepPopup || hidePopup());
+map.on("move", () => keepPopup || editor.editing || hidePopup());
+
+// ---------- community submissions (src/editor.js) ----------
+const editor = createEditor({
+  $, esc, map, store, scheduleRows, ruleBits, fmtDay,
+  policies: () => policies, rulesets: () => rulesets, manifest: () => manifest, startTime,
+  close: hidePopup, resize: () => syncSheetHeight(),
+});

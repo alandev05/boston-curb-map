@@ -27,6 +27,7 @@ export { NO_DATA_ZOOM };
 import { loadOsm } from "./osm-roads.js";
 import { parseCsv, assignSweeping } from "./sweeping.js";
 import { assignMeters } from "./meters.js";
+import { applyCommunity } from "./community.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IN = process.env.DATA_DIR || path.join(root, "data", "raw");
@@ -38,7 +39,11 @@ const lon2x = (lon, z) => Math.floor(((lon + 180) / 360) * 2 ** z);
 const lat2y = (lat, z) => Math.floor(((1 - Math.log(Math.tan((lat * Math.PI) / 180) + 1 / Math.cos((lat * Math.PI) / 180)) / Math.PI) / 2) * 2 ** z);
 
 // `rulesets` (in/out): distinct "id,id,…" strings; a feature's `rs` is its index here.
-export function prepare(features, policies, rulesets = []) {
+// Feature id → which city curb it is: [curb_zone_id, rs, length as the city drew it, from, to] (from/to in meters
+// along that curb when community corrections cut it into pieces). Written in shards of CURB_SHARD features as
+// public/data/curbs/<id / CURB_SHARD>.json; the map loads one when a curb is tapped.
+export const CURB_SHARD = 2000;
+export function prepare(features, policies, rulesets = [], curbs = []) {
   const out = [], index = new Map(rulesets.map((r, i) => [r, i]));
   for (const f of features) {
     if (!f.geometry) continue;
@@ -48,6 +53,7 @@ export function prepare(features, policies, rulesets = []) {
     // The feature id is a small integer (the map keys hover/selection on it): the city's 36-character ids were
     // half of every tile and barely compress. The feed's street name, side and zone number are empty for every
     // curb, so they aren't carried.
+    curbs.push([p.curb_zone_id ?? null, index.get(pids), p._rawLen ?? null, ...(p._from != null && !(p._from === 0 && p._to === p._rawLen) ? [p._from, p._to] : [])]);
     out.push({
       type: "Feature", id: out.length, geometry: f.geometry,
       properties: {
@@ -66,16 +72,23 @@ function bboxOf(features) {
   return [a, b, c, d];
 }
 
-export async function buildTiles(features, policies, { out = OUT, log = console.error, meta = {}, meters = [], roads = null, buildings = null, names = null, numbers = null, sweeping = null } = {}) {
-  // Meters first, on the city's own geometry: their schedules become curb rules (scripts/meters.js).
+export async function buildTiles(features, policies, { out = OUT, log = console.error, meta = {}, meters = [], roads = null, buildings = null, names = null, numbers = null, sweeping = null, community = [] } = {}) {
   policies = { ...policies };
+  // Each curb's length as the city drew it: the editor measures stretches along it (scripts/community.js).
+  const rawLen = (g) => (g?.type === "LineString" ? lineLength(g.coordinates) : g?.type === "MultiLineString" ? g.coordinates.reduce((n, c) => n + lineLength(c), 0) : null);
+  features = features.map((f) => (rawLen(f.geometry) != null ? { ...f, properties: { ...f.properties, _rawLen: +rawLen(f.geometry).toFixed(1) } } : f));
+  // Accepted community corrections first (they win on their stretch), then meters, both on the city's geometry.
+  const comm = community.length ? applyCommunity(features, policies, community, { log }) : null;
+  if (comm) features = comm.features;
   const metered = meters.length ? assignMeters(features, policies, meters, { log }) : null;
   if (metered) features = metered.features;
   const snap = snapZones(features, roads, { buildings });
   if (roads) log(`  snapped ${snap.snapped} of ${features.length} curbs onto road centerlines (${snap.stats.relaxed} on a second, looser pass, ${snap.stats.followed} by following a snapped neighbor); left in place: ${JSON.stringify(snap.stats.unsnapped)} (${snap.stats.clamped} pulled onto the nearest road edge); hidden inside intersections: ${snap.stats.hiddenInIntersection}; hidden (would cross a building, no road): ${snap.stats.hiddenThroughBuildings}`);
   // Street sweeping (city table, no geometry) joins onto the curbs as drawn; adds `sweep-*` policies.
   const sweep = sweeping?.length && names?.length ? assignSweeping(snap.features, policies, sweeping, { names, numbers }, { log }) : null;
-  const rulesets = [], prepared = prepare(snap.features, policies, rulesets);
+  // Community pieces carry what the sign says, street cleaning included: no table-joined sweeping on top.
+  for (const f of snap.features) if (f.properties?._community) f.properties.curb_policy_ids = f.properties.curb_policy_ids.filter((id) => !String(id).startsWith("sweep-"));
+  const rulesets = [], curbs = [], prepared = prepare(snap.features, policies, rulesets, curbs);
   const bbox = bboxOf(prepared);
   // Two indexes, each carrying only the curbs drawn at its zooms: full (NO_DATA_ZOOM up: every curb) and ruled
   // (below that: curbs with at least one readable rule; the rest can only ever be "no data", hidden until NO_DATA_ZOOM).
@@ -109,12 +122,16 @@ export async function buildTiles(features, policies, { out = OUT, log = console.
   const slimPolicies = Object.fromEntries(Object.entries(policies).map(([id, p]) => [id, {
     curb_policy_id: id, priority: p.priority, rules: (p.rules || []).map((r) => ({ activity: r.activity, max_stay: r.max_stay, max_stay_unit: r.max_stay_unit, user_classes: r.user_classes, user_classes_except: r.user_classes_except, purposes: r.purposes, rate: r.rate || r.rates })), rates: p.rates, time_spans: p.time_spans,
     ...(reasonOf(p) ? { reason: reasonOf(p) } : {}),
+    ...(p.source ? { source: p.source } : {}), ...(p.submission_id ? { submission_id: p.submission_id } : {}),
   }]));
   await mkdir(path.join(out, "data"), { recursive: true });
   await writeFile(path.join(out, "data", "policies.json"), JSON.stringify(slimPolicies));
   await writeFile(path.join(out, "data", "rulesets.json"), JSON.stringify(rulesets));
+  await rm(path.join(out, "data", "curbs"), { recursive: true, force: true });
+  await mkdir(path.join(out, "data", "curbs"), { recursive: true });
+  for (let k = 0; k * CURB_SHARD < curbs.length; k++) await writeFile(path.join(out, "data", "curbs", `${k}.json`), JSON.stringify(curbs.slice(k * CURB_SHARD, (k + 1) * CURB_SHARD)));
   const built = new Date(), version = built.getTime().toString(36);
-  const manifest = { ...meta, snapped: snap.snapped, sweeping: sweep ? { rows: sweep.rows, matched: sweep.rowsMatched, curbs: sweep.curbsSwept } : null, built_at: built.toISOString(), version, zones: prepared.length, rulesets: rulesets.length, policies: Object.keys(policies).length, meters: meters.length, meters_on_curbs: metered?.stats.matched ?? 0, meters_zoom: METERS_ZOOM, tiles: count, tile_bytes: bytes, bbox, minzoom: MIN_ZOOM, maxzoom: MAX_ZOOM, tile_url: `/tiles/{z}/{x}/{y}.pbf?v=${version}` };
+  const manifest = { ...meta, snapped: snap.snapped, sweeping: sweep ? { rows: sweep.rows, matched: sweep.rowsMatched, curbs: sweep.curbsSwept } : null, built_at: built.toISOString(), version, zones: prepared.length, rulesets: rulesets.length, policies: Object.keys(policies).length, meters: meters.length, meters_on_curbs: metered?.stats.matched ?? 0, community: comm?.stats.pieces ?? 0, curb_shard: CURB_SHARD, meters_zoom: METERS_ZOOM, tiles: count, tile_bytes: bytes, bbox, minzoom: MIN_ZOOM, maxzoom: MAX_ZOOM, tile_url: `/tiles/{z}/{x}/{y}.pbf?v=${version}` };
   await writeFile(path.join(out, "data", "manifest.json"), JSON.stringify(manifest, null, 1));
   return manifest;
 }
@@ -125,9 +142,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const policies = JSON.parse(await readFile(path.join(IN, "policies.json"), "utf8"));
   const meta = JSON.parse(await readFile(path.join(IN, "meta.json"), "utf8").catch(() => "{}"));
   const meters = JSON.parse(await readFile(path.join(IN, "meters.geojson"), "utf8").catch(() => '{"features":[]}')).features;
+  const community = JSON.parse(await readFile(path.join(IN, "submissions.json"), "utf8").catch(() => "[]"));
   const offline = process.argv.includes("--offline") || process.env.DATA_OFFLINE === "1";
   const osm = process.env.NO_SNAP ? null : await loadOsm(bboxOf(fc.features.filter((f) => f.geometry)), { cacheDir: path.join(IN, "osm"), offline });
   const sweeping = parseCsv(await readFile(path.join(IN, "sweeping.csv"), "utf8").catch(() => ""));
-  const m = await buildTiles(fc.features, policies, { meta, meters, roads: osm?.roads, buildings: osm?.buildings, names: osm?.names, numbers: osm?.numbers, sweeping });
+  const m = await buildTiles(fc.features, policies, { meta, meters, roads: osm?.roads, buildings: osm?.buildings, names: osm?.names, numbers: osm?.numbers, sweeping, community });
   console.log(`built ${m.tiles} tiles (${(m.tile_bytes / 1024).toFixed(0)} KB gz) for ${m.zones} zones + ${m.meters} meters in ${((Date.now() - t) / 1000).toFixed(1)}s → ${OUT}`);
 }

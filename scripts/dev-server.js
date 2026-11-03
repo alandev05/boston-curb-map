@@ -14,6 +14,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const args = Object.fromEntries(process.argv.slice(2).map((a, i, arr) => a.startsWith("--") ? [a.slice(2), arr[i + 1] ?? true] : []).filter(Boolean));
+// Secrets for the submission endpoints (SUPABASE_*, ADMIN_TOKEN) come from .env.local, as `vercel dev` would load them.
+try {
+  for (const line of (await readFile(path.join(root, ".env.local"), "utf8")).split("\n")) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2];
+  }
+} catch {}
 const PORT = Number(args.port || process.env.PORT || 3000);
 const VITE = args.vite ? Number(args.vite) : null;
 
@@ -27,7 +34,7 @@ function shim(req, res, url) {
 }
 
 async function serveStatic(res, urlPath) {
-  let p = path.join(root, "dist", urlPath === "/" ? "index.html" : urlPath);
+  let p = path.join(root, "dist", urlPath === "/" ? "index.html" : urlPath === "/review" ? "review.html" : urlPath);
   try { if ((await stat(p)).isDirectory()) p = path.join(p, "index.html"); } catch { p = path.join(root, "dist", "index.html"); }
   try {
     const body = await readFile(p);
@@ -56,6 +63,10 @@ export function createServer() {
       try {
         const mod = await import(pathToFileURL(path.join(root, "api", `${name}.js`)).href);
         shim(req, res, url);
+        if (req.method === "POST") { // like Vercel: a JSON body arrives parsed as req.body
+          const chunks = []; for await (const c of req) chunks.push(c);
+          try { req.body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { req.body = {}; }
+        }
         await mod.default(req, res);
       } catch (e) {
         res.writeHead(e.code === "ERR_MODULE_NOT_FOUND" ? 404 : 500, { "Content-Type": "application/json" });

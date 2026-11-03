@@ -88,7 +88,10 @@ export function assignMeters(features, policies, meters, { maxDist = 6, log = ()
     }
   });
   // Each active meter goes to the curb it stands beside: nearest line whose perpendicular foot lands on it.
-  const onCurb = new Map(); // zone index → [meter props]
+  // Meters belong to the city curb, not the drawn piece: a curb cut in pieces by a community correction keeps the
+  // context of the whole curb (its meters, its length) for every piece the community didn't take over.
+  const curbKey = (zi) => features[zi].properties?.curb_zone_id ?? `#${zi}`;
+  const onCurb = new Map(); // curb → [meter props]
   for (const m of meters) {
     const p = m.properties || {};
     if (m.geometry?.type !== "Point" || (p.METER_STATE && p.METER_STATE !== "ACTIVE") || !p.PAY_POLICY) continue;
@@ -104,12 +107,13 @@ export function assignMeters(features, policies, meters, { maxDist = 6, log = ()
     }
     if (!best) continue;
     stats.matched++;
-    (onCurb.get(best.zi) || onCurb.set(best.zi, []).get(best.zi)).push(p);
+    const k = curbKey(best.zi);
+    (onCurb.get(k) || onCurb.set(k, []).get(k)).push(p);
   }
   const out = features.map((f, zi) => {
-    if (!f.geometry || f.geometry.type !== "LineString") return f;
+    if (!f.geometry || f.geometry.type !== "LineString" || f.properties?._community) return f; // someone checked the sign
     let ids = [...(f.properties.curb_policy_ids || [])];
-    const here = onCurb.get(zi) || [];
+    const here = onCurb.get(curbKey(zi)) || [];
     if (here.length) {
       stats.curbs++;
       const feedMeters = ids.filter((id) => policies[id] && isMetered(policies[id]));
@@ -125,7 +129,7 @@ export function assignMeters(features, policies, meters, { maxDist = 6, log = ()
       .flatMap(({ days, start, end }) => { const a = toMin(start), b = toMin(end), t = []; for (const d of days) for (let m = a; m < b; m += 30) t.push([d, m]); return t; });
     const blocksMeters = (p) => payTimes.length && !isMetered(p) && !["free", "paid", "unknown"].includes(categorize(ruleOf(p))) && payTimes.every(([d, m]) => policyActive(p, d, m));
     // Spot signs on a long curb that also has general parking or meters cover only part of it.
-    const len = lineLength(f.geometry.coordinates);
+    const len = f.properties._rawLen ?? lineLength(f.geometry.coordinates);
     const general = here.length || ids.some((id) => {
       const p = policies[id];
       if (!p || !isRealPolicy(p) || SPOT.test(p.description || "")) return false;

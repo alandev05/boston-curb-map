@@ -7,7 +7,7 @@ import { VectorTile } from "@mapbox/vector-tile";
 import Pbf from "pbf";
 import { encodeSchedule, dominant, slotIndex, codeAt, CODES, CATEGORY_OF, DAYS, SLOTS } from "../src/schedule.js";
 import { verdict, isRealPolicy } from "../src/rules.js";
-import { prepare, buildTiles, MIN_ZOOM, MAX_ZOOM, NO_DATA_ZOOM, METERS_ZOOM } from "../scripts/build-tiles.js";
+import { prepare, buildTiles, MIN_ZOOM, MAX_ZOOM, NO_DATA_ZOOM, METERS_ZOOM, CURB_SHARD } from "../scripts/build-tiles.js";
 import { POLICIES, ZONES, METERS } from "../scripts/mock-cds.js";
 
 const toFeature = (z) => { const { geometry, ...properties } = z; return { type: "Feature", geometry, properties }; };
@@ -98,6 +98,14 @@ describe("buildTiles()", () => {
     expect(manifest.tile_url).toBe(`/tiles/{z}/{x}/{y}.pbf?v=${manifest.version}`);
     expect(manifest.tiles).toBeGreaterThan(10);
     expect(manifest.bbox[0]).toBeLessThan(manifest.bbox[2]);
+  });
+  it("writes the feature id → city curb lookup in shards, with each curb's rule set", async () => {
+    expect(manifest.curb_shard).toBe(CURB_SHARD);
+    const shard0 = JSON.parse(await readFile(path.join(out, "data", "curbs", "0.json"), "utf8"));
+    expect(shard0).toHaveLength(Math.min(CURB_SHARD, manifest.zones));
+    for (const [zone, rs] of shard0) { expect(subset.some((f) => f.properties.curb_zone_id === zone)).toBe(true); expect(Number.isInteger(rs)).toBe(true); }
+    const line = shard0.find((r) => r[2] != null); // lines carry their length (areas can't be split into stretches)
+    expect(line[2]).toBeGreaterThan(0);
   });
   it("writes a zoom directory for every level in range", async () => {
     const zs = (await readdir(path.join(out, "tiles"))).map(Number).sort((a, b) => a - b);

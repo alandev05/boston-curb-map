@@ -113,4 +113,4 @@ npm run build && npm run serve
 
 ## Themes
 
-Dark by default (or follows `prefers-color-scheme`); the toggle persists in `localStorage`. The map is strictly 2D (pitch and rotation locked, like Google Maps). Both themes share one layer list so `map.setStyle(…, { diff: true })` swaps paint in place. UI uses the system font stack (Helvetica Neue / Segoe / Roboto) — no web fonts, no logos.
+Follows the device's light/dark setting (`prefers-color-scheme`, live); the theme button switches it for the visit. The map is strictly 2D (pitch and rotation locked, like Google Maps). Both themes share one layer list so `map.setStyle(…, { diff: true })` swaps paint in place. UI uses the system font stack (Helvetica Neue / Segoe / Roboto) — no web fonts, no logos.

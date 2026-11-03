@@ -3,11 +3,12 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import "./style.css";
 import { CATEGORIES, verdict, daySchedule, policyActive, fmtSpanShort, fmtTime, fmtRate, fmtSpan, dayKey, isRealPolicy, isStreetCleaning, ruleOf, collapsePolicies, overriddenBy, reasonOf, catColor, shade, cityHoliday, stayWindow, evaluateStay } from "./rules.js";
 import { DEMO_ZONES, DEMO_POLICIES } from "./demo.js";
-import { buildStyle, curbPaint, LABEL_LAYERS, METER_LAYERS, CURB_LAYERS, CURB_FADE_ZOOM, CURB_ZOOM, NO_DATA_ZOOM } from "./basemap.js";
+import { buildStyle, curbPaint, CURB_LAYERS, CURB_FADE_ZOOM, CURB_ZOOM, NO_DATA_ZOOM } from "./basemap.js";
 import { CODES, CATEGORY_OF, SLOT_MIN } from "./schedule.js";
 
 const $ = (s) => document.querySelector(s);
-const status = (msg, kind = "") => { const el = $("#status"); el.textContent = msg; el.className = `status ${kind}`; };
+// Data-loading progress and problems go to the console (the panel has no status line).
+const status = (msg, kind = "") => (kind === "warn" ? console.warn : console.info)(`[curbs] ${msg}`);
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 
 // ---------- state ----------
@@ -123,17 +124,8 @@ map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom
 map.addControl(new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true }), "bottom-right");
 map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-left");
 
-let metersData = null;
-function applyLayerToggles() {
-  for (const id of METER_LAYERS) map.setLayoutProperty(id, "visibility", $("#showMeters").checked ? "visible" : "none");
-  for (const id of LABEL_LAYERS) map.setLayoutProperty(id, "visibility", $("#showLabels").checked ? "visible" : "none");
-}
-// After any setStyle (theme switch) the GeoJSON sources come back empty and feature-state is gone: refill both.
-map.on("style.load", () => {
-  applyLayerToggles();
-  repaint();
-  if (metersData) map.getSource("meters")?.setData(metersData);
-});
+// After any setStyle (theme switch) feature-state is gone: recolor.
+map.on("style.load", repaint);
 
 map.on("load", () => {
   buildLegend();
@@ -295,18 +287,6 @@ function repaint() {
 }
 
 
-async function loadMeters() {
-  status("Fetching parking meters…", "busy");
-  try {
-    const r = await fetch("/api/meters");
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `meters ${r.status}`);
-    const fc = await r.json();
-    metersData = fc;
-    map.getSource("meters").setData(fc);
-    status(`${fc.features.length.toLocaleString()} meters loaded`, "ok");
-  } catch (e) { status(`Meters unavailable: ${e.message}`, "warn"); }
-}
-
 // ---------- UI: legend ----------
 // Every rule shows by default. Clicking a chip shows only that rule; more clicks add to the selection; clearing the
 // last one shows everything again.
@@ -413,8 +393,6 @@ setInterval(() => {
 }, 15000);
 
 // ---------- UI: layers, theme, panel ----------
-$("#showMeters").addEventListener("change", (e) => { applyLayerToggles(); if (e.target.checked && !metersData && !(mode === "tiles" && manifest.meters > 0)) loadMeters(); });
-$("#showLabels").addEventListener("change", applyLayerToggles);
 function setTheme(t) {
   theme = t;
   document.documentElement.dataset.theme = t;

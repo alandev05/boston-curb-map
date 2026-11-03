@@ -16,7 +16,7 @@
       <form id="search" class="search" role="search" autocomplete="off">
         <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
         <input id="searchInput" type="search" placeholder="Search Boston streets" aria-label="Search for a street or place" enterkeyhint="search" />
-        <button id="settingsBtn" class="settings-btn" type="button" aria-label="Time, permits and layers" aria-expanded="false">
+        <button id="settingsBtn" class="settings-btn" type="button" aria-label="Time and settings" aria-expanded="false">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
         </button>
       </form>
@@ -59,14 +59,7 @@
         <ul id="legend" class="legend"></ul>
       </section>
 
-      <section class="card layers">
-        <h2>Layers</h2>
-        <label class="toggle"><input type="checkbox" id="showMeters" /> <span>Parking meters</span></label>
-        <label class="toggle"><input type="checkbox" id="showLabels" checked /> <span>Street names</span></label>
-      </section>
-
       <footer>
-        <div id="status" class="status">Loading curb data…</div>
         <small>Data: City of Boston <a href="https://www.boston.gov/curb-lab" target="_blank" rel="noopener">Curb Lab</a> CDS API + <a href="https://data.boston.gov" target="_blank" rel="noopener">Analyze Boston</a>. Not official guidance — read the sign.</small>
       </footer>
     </aside>

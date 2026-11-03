@@ -91,7 +91,7 @@ const roadRank = ["match", ["get", "class"], ...CLASSES.flatMap((c) => [c, ROADS
 // Level of detail. Zoomed out, a single curb is too small to read or click, and drawing tens of thousands of them is
 // what made zooming slow, so curbs only appear from CURB_FADE_ZOOM, fully drawn and clickable by CURB_ZOOM.
 // "No data" curbs (never anything else) join, dimmed, at NO_DATA_ZOOM.
-export const CURB_FADE_ZOOM = 13, CURB_ZOOM = 13.4, NO_DATA_ZOOM = 14;
+export const CURB_FADE_ZOOM = 12, CURB_ZOOM = 12.3, NO_DATA_ZOOM = 14;
 // `bind` (optional): ["name", expr, …] — variables the other expressions use as ["var", name] (the curb's category
 // looked up once per property instead of once per use in the JSON). Each paint value that refers to one is
 // wrapped in a single "let".

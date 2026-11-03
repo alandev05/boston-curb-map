@@ -108,8 +108,8 @@ function padBounds([w, s, e, n], dx = 0.06, dy = 0.04) { return [[w - dx, s - dy
 
 const map = new maplibregl.Map({
   container: "map",
-  center: [-71.072, 42.352], // Back Bay / Downtown, at a zoom where curbs are drawn (they start at CURB_FADE_ZOOM)
-  zoom: 13.8,
+  center: [-71.07, 42.35], // central Boston, at a zoom where curbs are drawn (they start at CURB_FADE_ZOOM)
+  zoom: 12.6,
   // Boston only: the view can't leave the curb data's area (plus a margin), which also caps how far out you can
   // zoom — about the whole city on a laptop screen. minZoom is a floor for very small screens.
   maxBounds: padBounds(mode === "tiles" && manifest?.bbox ? manifest.bbox : CITY_BBOX),

@@ -11,6 +11,19 @@
   <body>
     <div id="map"></div>
 
+    <!-- Phones: search pill + one swipeable chip row over the map (the time chip and legend move here from the panel). -->
+    <div id="topbar">
+      <form id="search" class="search" role="search" autocomplete="off">
+        <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+        <input id="searchInput" type="search" placeholder="Search Boston streets" aria-label="Search for a street or place" enterkeyhint="search" />
+        <button id="settingsBtn" class="settings-btn" type="button" aria-label="Time, permits and layers" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+        </button>
+      </form>
+      <ul id="searchResults" class="search-results" role="listbox" hidden></ul>
+      <div id="chipRow" class="chip-row"></div>
+    </div>
+
     <aside id="panel">
       <button id="sheetHandle" class="sheet-handle" type="button" aria-label="Show more options" aria-expanded="false"></button>
       <header>
@@ -27,7 +40,11 @@
         <small id="dateNote" class="date-note"></small>
         <div id="whenPanel" class="when-panel" hidden>
           <div class="field">
-            <span>Start</span>
+            <span>Start <output id="sliderOut" for="timeSlider"></output></span>
+            <div class="slider">
+              <input id="timeSlider" type="range" min="0" step="30" value="0" aria-label="Start time, from now through tomorrow" />
+              <div class="slider-scale" aria-hidden="true"><span>Now</span><span id="midMark">Midnight</span><span id="endMark">Tomorrow</span></div>
+            </div>
             <div class="row"><select id="dateSel" aria-label="Day"></select><select id="timeSel" aria-label="Start time"></select></div>
           </div>
           <div class="field">

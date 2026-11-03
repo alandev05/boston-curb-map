@@ -364,6 +364,30 @@ function pinFromControls() {
   pinned = new Date(d.getTime() + +$("#timeSel").value * 60000);
   syncTime();
 }
+// Slider: Now (0) through the end of tomorrow in half-hour steps, measured from the current half hour, so dragging
+// past the midnight mark rolls into the next day. The day/time selects below still reach the rest of the week.
+const sliderBase = () => { const slot = SLOT_MIN * 60000; return Math.floor(Date.now() / slot) * slot; };
+function syncSlider() {
+  const base = sliderBase(), now = new Date(base), el = $("#timeSlider");
+  const tomorrow = midnight(now); tomorrow.setDate(tomorrow.getDate() + 1);
+  const end = new Date(tomorrow); end.setDate(end.getDate() + 1);
+  const max = Math.round((end - base) / 60000) - SLOT_MIN;
+  el.max = String(max); el.step = String(SLOT_MIN);
+  el.value = String(live ? 0 : Math.max(0, Math.min(max, Math.round((pinned - base) / 60000))));
+  const mid = (((tomorrow - base) / 60000) / max) * 100;
+  $("#midMark").style.left = `${mid}%`;
+  $("#midMark").style.visibility = mid < 14 ? "hidden" : ""; // late at night it would sit on top of "Now"
+  $("#endMark").textContent = fmtDay(tomorrow).split(",")[0];
+  const t = startTime();
+  $("#sliderOut").textContent = live ? "· now" : `· ${midnight(t).getTime() === midnight(now).getTime() ? "Today" : midnight(t).getTime() === tomorrow.getTime() ? "Tomorrow" : fmtDay(t).split(",")[0]} ${fmtClock(t)}`;
+}
+let sliderFrame = 0;
+$("#timeSlider").addEventListener("input", (e) => {
+  const v = +e.target.value;
+  live = v === 0; pinned = live ? null : new Date(sliderBase() + v * 60000);
+  cancelAnimationFrame(sliderFrame);
+  sliderFrame = requestAnimationFrame(syncTime); // one recolor per frame while dragging
+});
 function setStay(m) { stayMin = m; syncTime(); }
 function syncTime() {
   const t = startTime(), hol = holidayName(), day = dayKey(t);
@@ -376,12 +400,13 @@ function syncTime() {
   $("#timeSel").value = String(Math.floor(minuteOf(t) / SLOT_MIN) * SLOT_MIN);
   const custom = stayMin && !STAYS.includes(stayMin);
   for (const b of document.querySelectorAll("#stayChips button")) b.setAttribute("aria-pressed", b.dataset.min === "custom" ? String(!!custom || !$("#stayCustomWrap").hidden) : String(+b.dataset.min === stayMin));
+  syncSlider();
   $("#nowBtn").hidden = live && !stayMin;
   $("#stayKey").hidden = !stayMin;
   repaint();
 }
 $("#whenBtn").addEventListener("click", () => {
-  if (phone.matches && !sheetOpen()) { setSheet(true); if (!$("#whenPanel").hidden) return; } // collapsed sheet: open it at the time controls
+  if (phone.matches) return setSheet(!sheetOpen()); // phones: the chip opens the settings sheet, where the time controls are always open
   const open = $("#whenPanel").hidden;
   $("#whenPanel").hidden = !open;
   $("#whenBtn").setAttribute("aria-expanded", String(open));
@@ -435,15 +460,25 @@ $("#themeBtn").addEventListener("click", () => setTheme(theme === "dark" ? "ligh
 systemDark.addEventListener("change", (e) => { if ((e.matches ? "dark" : "light") !== theme) setTheme(e.matches ? "dark" : "light"); });
 $("#themeBtn").textContent = theme === "dark" ? "Light" : "Dark";
 $("#panelToggle").addEventListener("click", () => $("#panel").classList.toggle("collapsed"));
-// Phone bottom sheet: collapsed shows the time chip + legend row; tap or drag the handle to open the rest.
+// Phones: the time chip and legend move from the panel into the chip row under the search pill, and the panel becomes
+// a settings sheet opened by the slider button or the time chip (tap or drag its handle down to close).
 const phone = matchMedia("(max-width: 640px)");
+function placeControls() {
+  if (phone.matches) { $("#chipRow").append($("#whenBtn"), $("#legend")); return; }
+  $(".card.when").prepend($("#whenBtn"));
+  $(".rules-card h2").after($("#legend"));
+  setSheet(false);
+}
 const sheetOpen = () => $("#panel").classList.contains("open");
 function setSheet(open) {
   $("#panel").classList.toggle("open", open);
+  $("#settingsBtn").setAttribute("aria-expanded", String(open));
   $("#sheetHandle").setAttribute("aria-expanded", String(open));
-  $("#sheetHandle").setAttribute("aria-label", open ? "Show fewer options" : "Show more options");
+  $("#sheetHandle").setAttribute("aria-label", open ? "Close settings" : "Open settings");
   if (!open) $("#panel").scrollTop = 0;
+  syncSheetHeight();
 }
+$("#settingsBtn").addEventListener("click", () => setSheet(!sheetOpen()));
 {
   const h = $("#sheetHandle"), panel = $("#panel");
   let y0 = null, dy = 0;
@@ -469,12 +504,60 @@ map.once("load", () => {
 });
 // Bottom map controls sit above whichever sheet (panel or popup) is showing.
 const syncSheetHeight = () => {
-  const el = document.body.classList.contains("popup-open") ? $("#popup") : $("#panel");
-  document.documentElement.style.setProperty("--sheet-h", phone.matches ? `${el.offsetHeight}px` : "0px");
+  const el = document.body.classList.contains("popup-open") ? $("#popup") : sheetOpen() ? $("#panel") : null;
+  document.documentElement.style.setProperty("--sheet-h", phone.matches && el ? `${el.offsetHeight}px` : "0px");
 };
 new ResizeObserver(syncSheetHeight).observe($("#panel"));
 new ResizeObserver(syncSheetHeight).observe($("#popup"));
-phone.addEventListener("change", syncSheetHeight);
+phone.addEventListener("change", () => { placeControls(); syncSheetHeight(); });
+placeControls();
+
+// ---------- search (phones) ----------
+// Photon (OpenStreetMap geocoder, CORS-open, no key) limited to the city's box. Picking a result flies there and
+// drops a pin; clearing the box removes it.
+{
+  const input = $("#searchInput"), list = $("#searchResults");
+  let timer = 0, seq = 0, results = [], pin = null;
+  const close = () => { list.hidden = true; list.innerHTML = ""; };
+  const label = (f) => {
+    const p = f.properties, place = [p.district || p.locality, p.city].filter((x, i, a) => x && a.indexOf(x) === i).join(", ");
+    return { name: p.name || [p.housenumber, p.street].filter(Boolean).join(" ") || place, place: p.name ? place : "" };
+  };
+  function go(f) {
+    const p = f.properties, [lng, lat] = f.geometry.coordinates;
+    input.value = label(f).name; input.blur(); close(); hidePopup(); setSheet(false);
+    (pin ||= new maplibregl.Marker({ color: "#3ea8ff" })).setLngLat([lng, lat]).addTo(map);
+    if (p.extent) map.fitBounds([[p.extent[0], p.extent[3]], [p.extent[2], p.extent[1]]], { padding: 60, maxZoom: 17.5 });
+    else map.flyTo({ center: [lng, lat], zoom: 17 });
+  }
+  async function lookup(q) {
+    const my = ++seq, c = map.getCenter();
+    try {
+      const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=10&lang=en&bbox=${CITY_BBOX.join(",")}&lat=${c.lat}&lon=${c.lng}`);
+      if (my !== seq) return;
+      // A long street comes back once per OSM segment; keep the first (nearest) of each name + neighborhood.
+      const seen = new Set();
+      results = ((await r.json()).features || []).filter((f) => { const l = label(f), k = `${l.name}|${l.place}`; return !seen.has(k) && seen.add(k); });
+    } catch { if (my === seq) results = []; }
+    if (my !== seq || !input.value.trim()) return;
+    list.innerHTML = results.length
+      ? results.map((f, i) => { const l = label(f); return `<li role="option" data-i="${i}">${esc(l.name)}${l.place ? `<small>${esc(l.place)}</small>` : ""}</li>`; }).join("")
+      : `<li class="empty">No matches in Boston</li>`;
+    list.hidden = false;
+  }
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    const q = input.value.trim();
+    if (q.length < 3) { seq++; close(); if (!q && pin) { pin.remove(); pin = null; } return; }
+    timer = setTimeout(() => lookup(q), 250);
+  });
+  input.addEventListener("focus", () => { setSheet(false); if (list.innerHTML) list.hidden = false; });
+  input.addEventListener("keydown", (e) => { if (e.key === "Escape") { close(); input.blur(); } });
+  $("#search").addEventListener("submit", (e) => { e.preventDefault(); if (results[0]) go(results[0]); });
+  list.addEventListener("click", (e) => { const li = e.target.closest("li[data-i]"); if (li) go(results[+li.dataset.i]); });
+  map.on("movestart", () => !list.hidden && document.activeElement !== input && close());
+  map.on("click", () => { close(); input.blur(); });
+}
 buildTimeControls();
 syncTime();
 

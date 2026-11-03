@@ -1,7 +1,7 @@
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./style.css";
-import { CATEGORIES, verdict, fmtRate, fmtSpan, dayKey, isRealPolicy, isMetered, isStreetCleaning, ruleOf, collapsePolicies, overriddenBy, catColor, shade, cityHoliday, stayWindow, evaluateStay, allowedFor } from "./rules.js";
+import { CATEGORIES, verdict, fmtRate, fmtSpan, dayKey, isRealPolicy, isMetered, isStreetCleaning, ruleOf, collapsePolicies, overriddenBy, catColor, shade, cityHoliday, stayWindow, evaluateStay } from "./rules.js";
 import { DEMO_ZONES, DEMO_POLICIES } from "./demo.js";
 import { buildStyle, curbPaint, LABEL_LAYERS, METER_LAYERS, CURB_LAYERS, CURB_FADE_ZOOM, CURB_ZOOM, NO_DATA_ZOOM } from "./basemap.js";
 import { CODES, CATEGORY_OF, SLOT_MIN } from "./schedule.js";
@@ -13,7 +13,6 @@ const store = { get: (k) => { try { return localStorage.getItem(k); } catch { re
 // ---------- state ----------
 let policies = {};                 // curb_policy_id -> policy
 let rulesets = [];                 // tiles: rs -> "id,id,…" (every distinct set of rule ids a curb carries)
-let cells = null;                  // tiles: the zoomed-out grid (public/data/cells.json)
 const selected = new Set();        // legend: empty = show every rule; otherwise only these categories
 // Time: by default the map follows the clock ("live"). Picking a start in the time panel pins it; a stay length
 // (minutes, 0 = just this moment) switches the map to grading each curb for the whole stay.
@@ -95,10 +94,9 @@ async function detectMode() {
     if (!manifest.tiles) throw 0;
     // Versioned like the tiles, so a browser can't pair this build's tiles with another build's rules.
     const v = manifest.version ? `?v=${manifest.version}` : "";
-    const [pr, rr, cr] = await Promise.all(["policies", "rulesets", "cells"].map((f) => fetch(`/data/${f}.json${v}`)));
+    const [pr, rr] = await Promise.all(["policies", "rulesets"].map((f) => fetch(`/data/${f}.json${v}`)));
     policies = pr.ok ? await pr.json() : {};
     rulesets = rr.ok ? await rr.json() : [];
-    cells = cr.ok ? await cr.json() : null;
     mode = "tiles";
     gradeAll();
   } catch { mode = "api"; }
@@ -110,8 +108,8 @@ function padBounds([w, s, e, n], dx = 0.06, dy = 0.04) { return [[w - dx, s - dy
 
 const map = new maplibregl.Map({
   container: "map",
-  center: [-71.0589, 42.3601],
-  zoom: 12.2,
+  center: [-71.072, 42.352], // Back Bay / Downtown, at a zoom where curbs are drawn (they start at CURB_FADE_ZOOM)
+  zoom: 13.8,
   // Boston only: the view can't leave the curb data's area (plus a margin), which also caps how far out you can
   // zoom — about the whole city on a laptop screen. minZoom is a floor for very small screens.
   maxBounds: padBounds(mode === "tiles" && manifest?.bbox ? manifest.bbox : CITY_BBOX),
@@ -138,7 +136,6 @@ function applyLayerToggles() {
 // After any setStyle (theme switch) the GeoJSON sources come back empty and feature-state is gone: refill both.
 map.on("style.load", () => {
   applyLayerToggles();
-  cellsKey = ""; // the new style's area image starts blank
   repaint();
   if (metersData) map.getSource("meters")?.setData(metersData);
 });
@@ -157,19 +154,13 @@ map.on("load", () => {
   // current zoom or legend hides (anything below CURB_ZOOM, no-data below NO_DATA_ZOOM).
   map.on("mousemove", (e) => {
     const f = pickCurb(e.point);
-    map.getCanvas().style.cursor = f || areaAt(e.lngLat) ? "pointer" : "";
+    map.getCanvas().style.cursor = f ? "pointer" : "";
     const id = f ? f.id : null;
     if (hoverId !== null && hoverId !== id) map.setFeatureState({ ...curbSource(), id: hoverId }, { hover: false });
     hoverId = id;
     if (id !== null) map.setFeatureState({ ...curbSource(), id }, { hover: true });
   });
-  map.on("click", (e) => {
-    const f = pickCurb(e.point);
-    if (f) return showPopup(f, e.lngLat);
-    hidePopup();
-    // Zoomed out, an area stands for many curbs: clicking it zooms in to them.
-    if (areaAt(e.lngLat)) map.flyTo({ center: e.lngLat, zoom: Math.max(map.getZoom() + 2, CURB_ZOOM + 1) });
-  });
+  map.on("click", (e) => { const f = pickCurb(e.point); f ? showPopup(f, e.lngLat) : hidePopup(); });
 });
 
 const curbSource = () => (mode === "tiles" ? { source: "curbs", sourceLayer: "curbs" } : { source: "zones" });
@@ -183,7 +174,7 @@ function drawnCat(f) {
 const HIT_PX = 7;
 function shownAtZoom(f) {
   const z = map.getZoom(), cat = drawnCat(f);
-  if (z < CURB_ZOOM || (cat === "unknown" && z < NO_DATA_ZOOM)) return false; // zoomed out, the grid stands in
+  if (z < CURB_ZOOM || (cat === "unknown" && z < NO_DATA_ZOOM)) return false; // zoomed out, curbs aren't drawn
   if (selected.size && !selected.has(cat)) return false;
   return true;
 }
@@ -307,85 +298,8 @@ function repaint() {
   } else gradeAll();
   const paint = curbPaint(theme, paintOpts());
   for (const id of CURB_LAYERS) for (const [k, v] of Object.entries(paint[id])) map.setPaintProperty(id, k, v);
-  updateAreas();
 }
 
-// Zoomed out, the map shades parking areas the way Google shades shopping districts: soft regions, no grid. From the
-// 100 m grid in cells.json, each square gets the length-weighted blend of the curb colors you can park at right now
-// (meter blue, free green, permit purple if you have one…; with rules picked in the legend, those rules instead) and
-// a strength: the share of its curb that qualifies, damped where there's little curb at all. That field gets a light
-// blur, is upsampled 4× with bilinear filtering and cut at a threshold with a narrow smoothstep: flat, rounded areas
-// with crisp anti-aliased edges (no glow); weak spots drop out, so only real parking areas are shaded. Painted to a
-// canvas and placed on the map as an image. Recomputed only when the grades, legend, "I have" toggles or theme
-// change (~20 ms).
-let cellsKey = "", areaHit = null;
-const hexRgb = (h) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16));
-const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-function updateAreas() {
-  const src = map.getSource("areas");
-  if (!src || !cells || mode !== "tiles" || !grades.cat.length) return;
-  const key = `${grades.key}|${[...selected].sort()}|${theme}`;
-  if (key === cellsKey) return;
-  cellsKey = key;
-  const level = cells.levels[0], size = cells.sizes[0], [kx, ky] = cells.k, PAD = 3, S = 4;
-  cells.extent ||= level.reduce((b, c) => [Math.min(b[0], c[0]), Math.min(b[1], c[1]), Math.max(b[2], c[0]), Math.max(b[3], c[1])], [Infinity, Infinity, -Infinity, -Infinity]);
-  const [i0, j0, i1, j1] = cells.extent, W = i1 - i0 + 1 + 2 * PAD, H = j1 - j0 + 1 + 2 * PAD;
-  const rgb = CATS.map((c) => hexRgb(catColor(c, theme))), unknown = CATS.indexOf("unknown");
-  const counts = (c) => (selected.size ? selected.has(c) : allowedFor(c, profile));
-  // Premultiplied field: r·a, g·a, b·a, a per square (row 0 = north).
-  let f = new Float32Array(W * H * 4);
-  for (const c of level) {
-    let total = 0, qual = 0, r = 0, g = 0, b = 0;
-    for (let k = 2; k < c.length; k += 2) {
-      const ci = grades.cat[c[k]], len = c[k + 1];
-      if (ci === undefined || ci === unknown) continue;
-      total += len;
-      if (!counts(CATS[ci])) continue;
-      qual += len; r += rgb[ci][0] * len; g += rgb[ci][1] * len; b += rgb[ci][2] * len;
-    }
-    if (!qual) continue;
-    const a = (qual / total) * Math.min(1, total / 250), o = ((j1 - c[1] + PAD) * W + (c[0] - i0 + PAD)) * 4;
-    f[o] = (r / qual) * a; f[o + 1] = (g / qual) * a; f[o + 2] = (b / qual) * a; f[o + 3] = a;
-  }
-  // One 3×3 gaussian (1-2-1): neighbors blend and edges round off, while a single metered street still survives.
-  {
-    const out = new Float32Array(f.length), wt = [1, 2, 1];
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) for (let ch = 0; ch < 4; ch++) {
-      let sum = 0;
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-        const yy = Math.min(H - 1, Math.max(0, y + dy)), xx = Math.min(W - 1, Math.max(0, x + dx));
-        sum += f[(yy * W + xx) * 4 + ch] * wt[dy + 1] * wt[dx + 1];
-      }
-      out[(y * W + x) * 4 + ch] = sum / 16;
-    }
-    f = out;
-  }
-  // Upsample with bilinear filtering, then shape the edges.
-  const HW = W * S, HH = H * S, canvas = document.createElement("canvas");
-  canvas.width = HW; canvas.height = HH;
-  const ctx = canvas.getContext("2d"), img = ctx.createImageData(HW, HH), maxA = theme === "light" ? 0.42 : 0.5;
-  const at = (x, y, ch) => f[(Math.min(H - 1, Math.max(0, y)) * W + Math.min(W - 1, Math.max(0, x))) * 4 + ch];
-  const hit = new Uint8Array(HW * HH);
-  for (let y = 0; y < HH; y++) for (let x = 0; x < HW; x++) {
-    const fx = (x + 0.5) / S - 0.5, fy = (y + 0.5) / S - 0.5, x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0;
-    const v = (ch) => (at(x0, y0, ch) * (1 - tx) + at(x0 + 1, y0, ch) * tx) * (1 - ty) + (at(x0, y0 + 1, ch) * (1 - tx) + at(x0 + 1, y0 + 1, ch) * tx) * ty;
-    const a = v(3), shaped = smoothstep(0.1, 0.15, a);
-    if (shaped <= 0) continue;
-    const o = (y * HW + x) * 4;
-    img.data[o] = v(0) / a; img.data[o + 1] = v(1) / a; img.data[o + 2] = v(2) / a; img.data[o + 3] = Math.round(255 * maxA * shaped);
-    hit[y * HW + x] = 1;
-  }
-  ctx.putImageData(img, 0, 0);
-  const w = ((i0 - PAD) * size) / kx, e = ((i1 + 1 + PAD) * size) / kx, so = ((j0 - PAD) * size) / ky, n = ((j1 + 1 + PAD) * size) / ky;
-  areaHit = { hit, HW, HH, w, e, so, n };
-  src.updateImage({ url: canvas.toDataURL(), coordinates: [[w, n], [e, n], [e, so], [w, so]] });
-}
-// Is there a shaded parking area under this point?
-function areaAt(ll) {
-  if (!areaHit || map.getZoom() >= CURB_ZOOM) return false;
-  const { hit, HW, HH, w, e, so, n } = areaHit, x = Math.floor(((ll.lng - w) / (e - w)) * HW), y = Math.floor(((n - ll.lat) / (n - so)) * HH);
-  return x >= 0 && y >= 0 && x < HW && y < HH && hit[y * HW + x] === 1;
-}
 
 async function loadMeters() {
   status("Fetching parking meters…", "busy");

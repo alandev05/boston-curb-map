@@ -88,12 +88,10 @@ const roadRank = ["match", ["get", "class"], ...CLASSES.flatMap((c) => [c, ROADS
 // gateExpr: a 0–1 multiplier per curb from the UI — 0 for categories filtered out in the legend, and a fade for curbs
 // that won't last a chosen stay. betterExpr: true for curbs that get better during the stay; they carry a dotted
 // stripe (zone-better) down the middle of the line.
-// Level of detail. Zoomed out, a single curb is too small to read or click, so the map shades parking areas instead,
-// like Google's shaded shopping districts: soft regions in the blended curb colors, built in the browser from a
-// CELL_SIZES-meter grid (see main.js). From CURB_FADE_ZOOM the curbs fade in as the areas fade out; by CURB_ZOOM the
-// areas are gone and curbs are clickable. "No data" curbs (never anything else) join, dimmed, at NO_DATA_ZOOM.
-export const CELL_SIZES = [100], CURB_FADE_ZOOM = 13, CURB_ZOOM = 13.4, NO_DATA_ZOOM = 14;
-const BLANK_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+// Level of detail. Zoomed out, a single curb is too small to read or click, and drawing tens of thousands of them is
+// what made zooming slow, so curbs only appear from CURB_FADE_ZOOM, fully drawn and clickable by CURB_ZOOM.
+// "No data" curbs (never anything else) join, dimmed, at NO_DATA_ZOOM.
+export const CURB_FADE_ZOOM = 13, CURB_ZOOM = 13.4, NO_DATA_ZOOM = 14;
 // `bind` (optional): ["name", expr, …] — variables the other expressions use as ["var", name] (the curb's category
 // looked up once per property instead of once per use in the JSON). Each paint value that refers to one is
 // wrapped in a single "let".
@@ -148,8 +146,6 @@ export function buildStyle(theme, { colorExpr, dimExpr, gateExpr, betterExpr, bi
       omt: { type: "vector", url: OFM_TILES, attribution: "© OpenStreetMap contributors, © OpenFreeMap" },
       ...curbSource,
       meters: { type: "geojson", data: { type: "FeatureCollection", features: [] } },
-      // The zoomed-out parking areas: an image main.js paints and places (starts as one transparent pixel).
-      areas: { type: "image", url: BLANK_PNG, coordinates: [[-71.19, 42.40], [-70.98, 42.40], [-70.98, 42.22], [-71.19, 42.22]] },
     },
     layers: [
       { id: "bg", type: "background", paint: { "background-color": P.bg } },
@@ -174,10 +170,6 @@ export function buildStyle(theme, { colorExpr, dimExpr, gateExpr, betterExpr, bi
         paint: { "line-color": P.rail, "line-width": ["interpolate", ["linear"], ["zoom"], 12, 0.6, 16, 1.5], "line-dasharray": [4, 3] } }),
 
       // Curbs sit on the roads, under all labels.
-      // Zoomed out: the grid (coarse squares below CELL_SPLIT_ZOOM, fine ones above), fading out as curbs fade in.
-      // Zoomed out: parking areas, smoothly resampled, fading out as the curbs fade in.
-      { id: "areas", type: "raster", source: "areas", maxzoom: CURB_ZOOM,
-        paint: { "raster-opacity": ["interpolate", ["linear"], ["zoom"], CURB_FADE_ZOOM, 1, CURB_ZOOM, 0], "raster-resampling": "linear", "raster-fade-duration": 0 } },
       { id: "zone-fill", type: "fill", ...curb, minzoom: CURB_FADE_ZOOM, filter: withFilter(["==", ["geometry-type"], "Polygon"]), paint: paint["zone-fill"] },
       { id: "zone-line", type: "line", ...curb, minzoom: CURB_FADE_ZOOM, ...(filter ? { filter } : {}), layout: { "line-cap": "round", "line-join": "round" }, paint: paint["zone-line"] },
       { id: "zone-better", type: "line", ...curb, minzoom: CURB_FADE_ZOOM, ...(filter ? { filter } : {}), layout: { "line-cap": "round", "line-join": "round" }, paint: { ...paint["zone-better"], "line-dasharray": [0.5, 2.5] } },
@@ -225,6 +217,5 @@ export function buildStyle(theme, { colorExpr, dimExpr, gateExpr, betterExpr, bi
 }
 
 export const CURB_LAYERS = ["zone-fill", "zone-line", "zone-better"];
-export const AREA_LAYERS = ["areas"];
 export const LABEL_LAYERS = ["road-label-major", "road-label-mid", "road-label-minor", "road-label-service"];
 export const METER_LAYERS = ["meters"];

@@ -3,14 +3,12 @@
 //   public/tiles/{z}/{x}/{y}.pbf   z9–15 (overzoomed to 20 by the client)
 //   public/data/policies.json       compact policy map for popups
 //   public/data/rulesets.json       every distinct set of rule ids, indexed by a feature's `rs`
-//   public/data/cells.json          the zoomed-out grid: per square, its curbs' rule sets and lengths
 //   public/data/manifest.json       counts, timestamps, bbox, zoom range
 // Each feature carries `rs`, the index of its set of rule ids: the map grades each rule set once for the chosen
 // time and stay and colors tiles by looking `rs` up in the result, so nothing per curb is computed while zooming.
 // `dom` (the most common category over the week) is a fallback for a feature the browser hasn't graded.
-// Level of detail: zoomed out, individual curbs are too small to read or click, so the map draws a grid instead
-// (public/data/cells.json: each square lists its curbs' rule sets and lengths; the browser colors it by the
-// dominant rule for the chosen time). Curb tiles start at MIN_ZOOM, where the grid hands over to curbs.
+// Level of detail: zoomed out, individual curbs are too small to read or click, so curb tiles start at MIN_ZOOM,
+// where curbs fade in (CURB_FADE_ZOOM, basemap.js).
 // Every data URL carries the build's version, so a browser never mixes tiles from one build with rules from another.
 // Curbs are snapped onto the basemap's OSM centerlines first (scripts/snap.js): `side` (+1/-1, 0 = unsnapped)
 // and `rc` (road class) let the map offset each one to its edge of the drawn road; `len` (m) drives
@@ -22,8 +20,8 @@ import { fileURLToPath } from "node:url";
 import geojsonvt from "geojson-vt";
 import vtpbf from "vt-pbf";
 import { encodeSchedule, dominant } from "../src/schedule.js";
-import { snapZones, lineLength, projector } from "./snap.js";
-import { CURB_FADE_ZOOM, NO_DATA_ZOOM, CELL_SIZES } from "../src/basemap.js";
+import { snapZones, lineLength } from "./snap.js";
+import { CURB_FADE_ZOOM, NO_DATA_ZOOM } from "../src/basemap.js";
 import { isRealPolicy } from "../src/rules.js";
 export { NO_DATA_ZOOM };
 import { loadOsm } from "./osm-roads.js";
@@ -58,27 +56,6 @@ export function prepare(features, policies, rulesets = []) {
     });
   }
   return out;
-}
-
-// The zoomed-out grid. For each square size (meters), every square with curbs that have rules: its grid position
-// and its curbs summed by rule set — [i, j, rs, meters, rs, meters, …]. Square (i, j) spans lon i·size/kx to
-// (i+1)·size/kx and lat j·size/ky to (j+1)·size/ky (`k` = [kx, ky], meters per degree). A curb counts in the square
-// holding its midpoint. The browser grades the rule sets for the chosen time and colors each square.
-export function buildCells(features, sizes = CELL_SIZES) {
-  const lat0 = features.find((f) => f.geometry)?.geometry.coordinates.flat(3)[1] ?? 42.35, P = projector(lat0);
-  const [kx, ky] = P.fwd([1, 1]);
-  const levels = sizes.map((size) => {
-    const cells = new Map();
-    for (const f of features) {
-      const line = f.geometry.type === "MultiLineString" ? f.geometry.coordinates.flat() : f.geometry.type === "LineString" ? f.geometry.coordinates : null;
-      if (!line?.length) continue;
-      const [x, y] = P.fwd(line[Math.floor(line.length / 2)]), i = Math.floor(x / size), j = Math.floor(y / size), k = `${i},${j}`;
-      let c = cells.get(k); if (!c) cells.set(k, (c = { i, j, byRs: new Map() }));
-      c.byRs.set(f.properties.rs, (c.byRs.get(f.properties.rs) || 0) + Math.min(f.properties.len, 500));
-    }
-    return [...cells.values()].map(({ i, j, byRs }) => [i, j, ...[...byRs].flatMap(([rs, m]) => [rs, Math.round(m)])]);
-  });
-  return { sizes, k: [+kx.toFixed(3), +ky.toFixed(3)], levels };
 }
 
 function bboxOf(features) {
@@ -131,10 +108,8 @@ export async function buildTiles(features, policies, { out = OUT, log = console.
   await mkdir(path.join(out, "data"), { recursive: true });
   await writeFile(path.join(out, "data", "policies.json"), JSON.stringify(slimPolicies));
   await writeFile(path.join(out, "data", "rulesets.json"), JSON.stringify(rulesets));
-  const cells = buildCells(ruled);
-  await writeFile(path.join(out, "data", "cells.json"), JSON.stringify(cells));
   const built = new Date(), version = built.getTime().toString(36);
-  const manifest = { ...meta, snapped: snap.snapped, sweeping: sweep ? { rows: sweep.rows, matched: sweep.rowsMatched, curbs: sweep.curbsSwept } : null, built_at: built.toISOString(), version, zones: prepared.length, rulesets: rulesets.length, cells: cells.levels.map((l) => l.length), policies: Object.keys(policies).length, meters: meters.length, meters_zoom: METERS_ZOOM, tiles: count, tile_bytes: bytes, bbox, minzoom: MIN_ZOOM, maxzoom: MAX_ZOOM, tile_url: `/tiles/{z}/{x}/{y}.pbf?v=${version}` };
+  const manifest = { ...meta, snapped: snap.snapped, sweeping: sweep ? { rows: sweep.rows, matched: sweep.rowsMatched, curbs: sweep.curbsSwept } : null, built_at: built.toISOString(), version, zones: prepared.length, rulesets: rulesets.length, policies: Object.keys(policies).length, meters: meters.length, meters_zoom: METERS_ZOOM, tiles: count, tile_bytes: bytes, bbox, minzoom: MIN_ZOOM, maxzoom: MAX_ZOOM, tile_url: `/tiles/{z}/{x}/{y}.pbf?v=${version}` };
   await writeFile(path.join(out, "data", "manifest.json"), JSON.stringify(manifest, null, 1));
   return manifest;
 }

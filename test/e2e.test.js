@@ -188,7 +188,6 @@ describe.skipIf(!hasDist || !hasTiles)("static tiles mode over HTTP", () => {
     const bundle = await (await fetch(base + js)).text();
     expect(bundle).toMatch(/\/data\/manifest\.json/);
     expect(bundle).toMatch(/rulesets/);
-    expect(bundle).toMatch(/cells/);
     expect(bundle).toMatch(/"at",\s*\["at",\s*\["get",\s*"rs"\]/); // O(1) array lookup per curb, not a string slice
   });
 });

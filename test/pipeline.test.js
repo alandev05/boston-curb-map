@@ -7,8 +7,7 @@ import { VectorTile } from "@mapbox/vector-tile";
 import Pbf from "pbf";
 import { encodeSchedule, dominant, slotIndex, codeAt, CODES, CATEGORY_OF, DAYS, SLOTS } from "../src/schedule.js";
 import { verdict, isRealPolicy } from "../src/rules.js";
-import { prepare, buildTiles, buildCells, MIN_ZOOM, MAX_ZOOM, NO_DATA_ZOOM, METERS_ZOOM } from "../scripts/build-tiles.js";
-import { CELL_SIZES } from "../src/basemap.js";
+import { prepare, buildTiles, MIN_ZOOM, MAX_ZOOM, NO_DATA_ZOOM, METERS_ZOOM } from "../scripts/build-tiles.js";
 import { POLICIES, ZONES, METERS } from "../scripts/mock-cds.js";
 
 const toFeature = (z) => { const { geometry, ...properties } = z; return { type: "Feature", geometry, properties }; };
@@ -118,16 +117,6 @@ describe("buildTiles()", () => {
     expect(Number.isInteger(f.id)).toBe(true);
     expect(f.properties.dom).toHaveLength(1);
   });
-  it("writes the zoomed-out grid: per square, its curbs' rule sets and lengths", async () => {
-    const cells = JSON.parse(await readFile(path.join(out, "data", "cells.json"), "utf8"));
-    expect(cells.sizes).toEqual(CELL_SIZES);
-    expect(cells.levels).toHaveLength(CELL_SIZES.length);
-    expect(manifest.cells).toEqual(cells.levels.map((l) => l.length));
-    const sum = (level) => level.reduce((n, c) => n + c.slice(2).filter((_, k) => k % 2).reduce((a, m) => a + m, 0), 0);
-    // every curb with rules is in exactly one square: the squares hold all of their length (each capped at 500 m)
-    const want = ruled().filter((f) => /LineString/.test(f.geometry.type)).reduce((n, f) => n + Math.min(f.properties.len, 500), 0);
-    expect(Math.abs(sum(cells.levels[0]) - want)).toBeLessThanOrEqual(cells.levels[0].reduce((n, c) => n + (c.length - 2) / 2, 0)); // per-entry rounding
-  });
   const idsAt = async (zoom) => {
     const ids = new Set(), z = String(zoom);
     for (const x of await readdir(path.join(out, "tiles", z))) for (const y of await readdir(path.join(out, "tiles", z, x))) {
@@ -159,14 +148,3 @@ describe("buildTiles()", () => {
   });
 });
 
-describe("buildCells()", () => {
-  const curb = (lon, lat, rs, len) => ({ type: "Feature", geometry: { type: "LineString", coordinates: [[lon, lat], [lon + 0.0001, lat]] }, properties: { rs, len } });
-  it("sums curbs by rule set within a square, and keeps squares apart", () => {
-    const { sizes, k, levels } = buildCells([curb(-71.08, 42.35, 3, 40), curb(-71.08001, 42.35001, 3, 10), curb(-71.08002, 42.35, 5, 20), curb(-71.0, 42.35, 3, 30)], [120]);
-    expect(sizes).toEqual([120]);
-    expect(k[0]).toBeLessThan(k[1]); // a degree of longitude is shorter than one of latitude here
-    const [a, b] = levels[0];
-    expect(Object.fromEntries(a.slice(2).reduce((p, v, i) => (i % 2 ? p[p.length - 1].push(v) : p.push([v]), p), []))).toEqual({ 3: 50, 5: 20 });
-    expect(b.slice(2)).toEqual([3, 30]);
-  });
-});

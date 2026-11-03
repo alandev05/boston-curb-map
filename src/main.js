@@ -1,7 +1,7 @@
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./style.css";
-import { CATEGORIES, verdict, fmtRate, fmtSpan, dayKey, isRealPolicy, isMetered, isStreetCleaning, ruleOf, collapsePolicies, overriddenBy, catColor, shade, cityHoliday, stayWindow, evaluateStay } from "./rules.js";
+import { CATEGORIES, verdict, fmtRate, fmtSpan, dayKey, isRealPolicy, isMetered, isStreetCleaning, ruleOf, categorize, collapsePolicies, overriddenBy, catColor, shade, cityHoliday, stayWindow, evaluateStay } from "./rules.js";
 import { DEMO_ZONES, DEMO_POLICIES } from "./demo.js";
 import { buildStyle, curbPaint, LABEL_LAYERS, METER_LAYERS, CURB_LAYERS, CURB_FADE_ZOOM, CURB_ZOOM, NO_DATA_ZOOM } from "./basemap.js";
 import { CODES, CATEGORY_OF, SLOT_MIN } from "./schedule.js";
@@ -72,7 +72,8 @@ function colorExprFor() {
   return ["case", highlightExpr, ["match", key, ...pairs((c) => shade(c, theme)), shade(fallback, theme)], ["match", key, ...pairs((c) => c), fallback]];
 }
 function gateExprFor() {
-  const sel = selected.size ? ["case", ["in", CAT, ["literal", [...selected]]], 1, 0] : 1;
+  const picked = [...selected, ...(selected.has("accessible") ? ["accessible_permit"] : [])];
+  const sel = selected.size ? ["case", ["in", CAT, ["literal", picked]], 1, 0] : 1;
   const fade = stayMin ? ["match", FIT, "x", 0.22, 1] : 1;
   return sel === 1 && fade === 1 ? 1 : ["*", sel, fade];
 }
@@ -175,7 +176,7 @@ const HIT_PX = 7;
 function shownAtZoom(f) {
   const z = map.getZoom(), cat = drawnCat(f);
   if (z < CURB_ZOOM || (cat === "unknown" && z < NO_DATA_ZOOM)) return false; // zoomed out, curbs aren't drawn
-  if (selected.size && !selected.has(cat)) return false;
+  if (selected.size && !selected.has(cat === "accessible_permit" ? "accessible" : cat)) return false;
   return true;
 }
 function pickCurb(pt) {
@@ -320,6 +321,7 @@ function buildLegend() {
   const ul = $("#legend");
   ul.innerHTML = "";
   for (const [k, v] of Object.entries(CATEGORIES)) {
+    if (v.legend === false) continue; // shown under a related chip (accessible_permit → Accessible)
     const li = document.createElement("li");
     li.innerHTML = `<button class="chip" type="button" data-cat="${k}" style="--c:${catColor(k, theme)}"><i></i>${v.label}</button>`;
     li.querySelector("button").addEventListener("click", () => { selected.has(k) ? selected.delete(k) : selected.add(k); syncLegend(); repaint(); });
@@ -495,10 +497,16 @@ function showPopup(feature, lngLat) {
   const pols = all.filter((pol) => !over.some((o) => o.pol === pol));
   // The same rule listed again for a subset of its times collapses into the broader one.
   const winner = v.policy;
-  const rows = collapsePolicies(pols).map(({ policy: pol, absorbed }) => {
+  // An accessible-only rule and a resident-only rule on the same stretch are shown as one line: the feed doesn't say
+  // whether you need either or both, so the map grades it as both and says so.
+  const entries = collapsePolicies(pols), kindOfEntry = (e) => categorize(ruleOf(e.policy));
+  const accE = entries.find((e) => kindOfEntry(e) === "accessible"), resE = entries.find((e) => kindOfEntry(e) === "resident");
+  if (accE && resE) { accE.merged = resE.policy; accE.absorbed.push(resE.policy, ...resE.absorbed); entries.splice(entries.indexOf(resE), 1); }
+  const rows = entries.map(({ policy: pol, absorbed, merged }) => {
     const wins = pol === winner || absorbed.includes(winner);
-    const bits = ruleBits(pol);
+    const bits = merged ? ["Accessible space · resident permit also posted"] : ruleBits(pol);
     let spans = spansText(pol);
+    if (merged) spans = (spansText(merged) === spans ? spans : `${spans} (accessible); ${spansText(merged)} (permit)`) + " · the city's data doesn't say whether you need one or both — check the sign";
     if (isMetered(pol)) spans += " · free Sundays & City holidays";
     if (wins && v.meterFree) bits.unshift(`<span class="free">Free ${live ? "now" : "then"}${hol ? ` (${esc(hol)})` : day === "sun" ? " (Sunday)" : " (outside meter hours)"}</span>`);
     return `<li class="${wins ? "on" : "dim"}"><b>${bits.join(" · ")}</b><br><span>${esc(spans)}</span>${wins ? `<em>${live ? "Now" : fmtClock(t)}</em>` : ""}</li>`;

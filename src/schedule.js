@@ -6,7 +6,7 @@
 import { verdict } from "./rules.js";
 
 export const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-export const CODES = { no_stopping: "s", no_parking: "n", street_cleaning: "c", travel: "t", loading: "l", paid: "p", resident: "r", accessible: "a", free: "f", unknown: "u" };
+export const CODES = { no_stopping: "s", no_parking: "n", street_cleaning: "c", travel: "t", loading: "l", paid: "p", resident: "r", accessible: "a", accessible_permit: "h", free: "f", unknown: "u" };
 export const CATEGORY_OF = Object.fromEntries(Object.entries(CODES).map(([k, v]) => [v, k]));
 export const SLOT_MIN = 30;
 export const SLOTS_PER_DAY = (24 * 60) / SLOT_MIN;

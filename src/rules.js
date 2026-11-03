@@ -12,6 +12,9 @@ export const CATEGORIES = {
   paid:        { label: "Paid meter", light: "#1a73e8", dark: "#8ab4f8", blurb: "Feed the meter or ParkBoston app." },
   resident:    { label: "Resident permit", light: "#9334e6", dark: "#c58af9", blurb: "Neighborhood sticker required." },
   accessible:  { label: "Accessible", light: "#d01884", dark: "#ff8bcb", blurb: "Disability placard only." },
+  // An accessible-only rule and a resident-only rule posted on the same short stretch (689 curbs, median 17 m): the
+  // feed doesn't say whether you need either or both, so it's graded strictly (both). Shown under "Accessible".
+  accessible_permit: { label: "Accessible + permit", light: "#d01884", dark: "#ff8bcb", blurb: "Placard and resident permit both posted — check the sign.", legend: false },
   free:        { label: "Free / time-limit", light: "#188038", dark: "#81c995", blurb: "Free, maybe with a time cap." },
   unknown:     { label: "No data", light: "#9aa0a6", dark: "#80868b", blurb: "No readable sign data for this curb — check the posted sign." },
 };
@@ -149,7 +152,7 @@ function kindOf(p) {
 // `active` (optional): a Map, policy → active at this moment, shared across zones evaluated for the same moment.
 export function verdict(zone, policies, day, minute, { meterFree = day === "sun", date, active: memo } = {}) {
   const ids = zone.curb_policy_ids || [];
-  let best = null, meter = null;
+  let best = null, meter = null, acc = null, res = null;
   for (const id of ids) {
     const p = policies[id];
     if (!p) continue;
@@ -162,10 +165,16 @@ export function verdict(zone, policies, day, minute, { meterFree = day === "sun"
     const pr = free ? Infinity : p.priority ?? 1000;
     if (!best || pr < best.pr) best = { pr, p, k, free };
     if (k.metered && !free && (!meter || pr < meter.pr)) meter = { pr, p, k, free };
+    if (active && k.category === "accessible") acc ||= { pr, p, k, free: false };
+    if (active && k.category === "resident") res ||= { pr, p, k, free: false };
   }
   // A time-limit sign and a meter on the same curb describe the same spaces ("2 hr parking" + "$3.75/hr, 2 hr max"):
   // while the meter runs, you pay, whichever the feed ranked first.
   if (best && meter && !best.free && best.k.category === "free") best = meter;
+  // Accessible-only and resident-only rules in force together describe the same short stretch, not a contest won
+  // on priority: graded as needing both (see CATEGORIES.accessible_permit).
+  if (best && acc && res && (best.k.category === "accessible" || best.k.category === "resident"))
+    return { category: "accessible_permit", rule: acc.k.rule, policy: acc.p, meterFree: false, also: res.p };
   if (!best) return { category: "unknown", rule: null, policy: null, meterFree: false };
   return { category: best.free ? "free" : best.k.category, rule: best.k.rule, policy: best.p, meterFree: best.free };
 }
@@ -283,7 +292,9 @@ const ruleKey = (p) => { const r = ruleOf(p); return JSON.stringify([isStreetCle
 export function overriddenBy(p, others) {
   const pr = p.priority ?? 1000;
   const meterUnderSign = (a) => isMetered(p) && kindOf(a).category === "free"; // the meter still applies (see verdict)
-  return others.find((a) => a !== p && isRealPolicy(a) && (a.priority ?? 1000) < pr && !isMetered(a) && !meterUnderSign(a) && policyCovers(a, p)) || null;
+  // Accessible spaces are real spaces on the stretch whatever their priority: never folded away, never fold others.
+  if (kindOf(p).category === "accessible") return null;
+  return others.find((a) => a !== p && isRealPolicy(a) && (a.priority ?? 1000) < pr && !isMetered(a) && !meterUnderSign(a) && kindOf(a).category !== "accessible" && policyCovers(a, p)) || null;
 }
 
 // pols in display order → [{ policy, absorbed: [policies it makes redundant] }]. Earlier entries win ties.
@@ -313,10 +324,11 @@ export function dayKey(d = new Date()) { return DAYS[d.getDay()]; }
 // "worst" is the most restrictive category met during the stay — what the map colors the curb by.
 export const STEP_MIN = 30;
 export function allowedFor(cat, profile = {}) {
-  return cat === "free" || cat === "paid" || (cat === "resident" && !!profile.permit) || (cat === "accessible" && !!profile.placard);
+  return cat === "free" || cat === "paid" || (cat === "resident" && !!profile.permit) || (cat === "accessible" && !!profile.placard)
+    || (cat === "accessible_permit" && !!profile.placard && !!profile.permit);
 }
 // Lower is better for a driver; anything not allowed ranks above every allowed category.
-const RANK = { free: 0, resident: 1, accessible: 1, paid: 2, loading: 3, unknown: 4, no_parking: 5, street_cleaning: 5, travel: 6, no_stopping: 7 };
+const RANK = { free: 0, resident: 1, accessible: 1, accessible_permit: 1, paid: 2, loading: 3, unknown: 4, no_parking: 5, street_cleaning: 5, travel: 6, no_stopping: 7 };
 export const rankFor = (cat, profile) => (allowedFor(cat, profile) ? 0 : 10) + (RANK[cat] ?? 4);
 
 // The 30-minute steps of a stay starting at `start` (Date) for `minutes`. Each step is resolved at its midpoint,

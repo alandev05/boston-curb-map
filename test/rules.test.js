@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { spanActive, policyActive, categorize, verdict, fmtRate, fmtSpan, dayKey, CATEGORIES, cityHolidays, cityHoliday, nextDate, ruleOf, stayWindow, evaluateStay, isStreetCleaning, collapsePolicies, overriddenBy } from "../src/rules.js";
+import { spanActive, policyActive, categorize, verdict, fmtRate, fmtSpan, dayKey, CATEGORIES, cityHolidays, cityHoliday, nextDate, ruleOf, stayWindow, evaluateStay, isStreetCleaning, collapsePolicies, overriddenBy, allowedFor } from "../src/rules.js";
 
 const span = (o) => ({ days_of_week: ["mon", "tue", "wed", "thu", "fri", "sat"], time_of_day_start: "08:00", time_of_day_end: "20:00", ...o });
 const M = (h, m = 0) => h * 60 + m;
@@ -400,5 +400,27 @@ describe("meter vs. time-limit sign on the same curb", () => {
   });
   it("the sign doesn't count as overriding the meter", () => {
     expect(overriddenBy(meter, [sign, meter])).toBeNull();
+  });
+});
+
+describe("accessible and resident-permit rules on the same stretch", () => {
+  const allDay = [{ days_of_week: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], time_of_day_start: "00:00", time_of_day_end: "00:00" }];
+  const acc = { curb_policy_id: "acc", priority: 73, rules: [{ activity: "no parking", user_classes_except: ["accessible"] }], time_spans: allDay };
+  const res = { curb_policy_id: "res", priority: 53, rules: [{ activity: "no parking", user_classes_except: ["resident_permit"] }], time_spans: allDay };
+  const both = { curb_policy_id: "both", priority: 73, rules: [{ activity: "no parking", user_classes_except: ["accessible", "resident_permit"] }], time_spans: allDay };
+  const pols = { acc, res, both };
+  it("two separate rules in force together grade as needing both, whatever their priorities", () => {
+    expect(verdict({ curb_policy_ids: ["res", "acc"] }, pols, "mon", 600).category).toBe("accessible_permit");
+    expect(verdict({ curb_policy_ids: ["acc", "res"] }, { acc, res: { ...res, priority: 73 } }, "mon", 600).category).toBe("accessible_permit");
+    expect(allowedFor("accessible_permit", { placard: true })).toBe(false);
+    expect(allowedFor("accessible_permit", { permit: true })).toBe(false);
+    expect(allowedFor("accessible_permit", { placard: true, permit: true })).toBe(true);
+  });
+  it("one rule that lists both exceptions itself is still either-or", () => {
+    expect(verdict({ curb_policy_ids: ["both"] }, pols, "mon", 600).category).toBe("resident");
+  });
+  it("an accessible rule is never folded away as overridden, and never folds others", () => {
+    expect(overriddenBy(acc, [res, acc])).toBeNull();
+    expect(overriddenBy({ ...res, priority: 90 }, [{ ...acc, priority: 1 }])).toBeNull();
   });
 });

@@ -161,7 +161,7 @@ map.on("load", () => {
     hoverId = id;
     if (id !== null) map.setFeatureState({ ...curbSource(), id }, { hover: true });
   });
-  map.on("click", (e) => { const f = pickCurb(e.point); f ? showPopup(f, e.lngLat) : hidePopup(); });
+  map.on("click", (e) => { const f = pickCurb(e.point); if (phone.matches) setSheet(false); f ? showPopup(f, e.lngLat) : hidePopup(); });
 });
 
 const curbSource = () => (mode === "tiles" ? { source: "curbs", sourceLayer: "curbs" } : { source: "zones" });
@@ -381,6 +381,7 @@ function syncTime() {
   repaint();
 }
 $("#whenBtn").addEventListener("click", () => {
+  if (phone.matches && !sheetOpen()) { setSheet(true); if (!$("#whenPanel").hidden) return; } // collapsed sheet: open it at the time controls
   const open = $("#whenPanel").hidden;
   $("#whenPanel").hidden = !open;
   $("#whenBtn").setAttribute("aria-expanded", String(open));
@@ -434,6 +435,46 @@ $("#themeBtn").addEventListener("click", () => setTheme(theme === "dark" ? "ligh
 systemDark.addEventListener("change", (e) => { if ((e.matches ? "dark" : "light") !== theme) setTheme(e.matches ? "dark" : "light"); });
 $("#themeBtn").textContent = theme === "dark" ? "Light" : "Dark";
 $("#panelToggle").addEventListener("click", () => $("#panel").classList.toggle("collapsed"));
+// Phone bottom sheet: collapsed shows the time chip + legend row; tap or drag the handle to open the rest.
+const phone = matchMedia("(max-width: 640px)");
+const sheetOpen = () => $("#panel").classList.contains("open");
+function setSheet(open) {
+  $("#panel").classList.toggle("open", open);
+  $("#sheetHandle").setAttribute("aria-expanded", String(open));
+  $("#sheetHandle").setAttribute("aria-label", open ? "Show fewer options" : "Show more options");
+  if (!open) $("#panel").scrollTop = 0;
+}
+{
+  const h = $("#sheetHandle"), panel = $("#panel");
+  let y0 = null, dy = 0;
+  h.addEventListener("pointerdown", (e) => { y0 = e.clientY; dy = 0; h.setPointerCapture(e.pointerId); panel.style.transition = "none"; });
+  h.addEventListener("pointermove", (e) => {
+    if (y0 === null) return;
+    dy = e.clientY - y0;
+    panel.style.transform = dy > 0 ? `translateY(${dy}px)` : ""; // follow the finger down; opening just snaps
+  });
+  const end = () => {
+    if (y0 === null) return;
+    y0 = null; panel.style.transition = panel.style.transform = "";
+    setSheet(Math.abs(dy) < 8 ? !sheetOpen() : dy < 0);
+  };
+  h.addEventListener("pointerup", end);
+  h.addEventListener("pointercancel", end);
+}
+map.on("dragstart", () => phone.matches && setSheet(false));
+// MapLibre opens the compact attribution on load; on a phone it crowds the controls, so start it folded (the ⓘ opens it).
+map.once("load", () => {
+  const a = phone.matches && document.querySelector(".maplibregl-ctrl-attrib");
+  if (a) { a.classList.remove("maplibregl-compact-show"); a.removeAttribute("open"); }
+});
+// Bottom map controls sit above whichever sheet (panel or popup) is showing.
+const syncSheetHeight = () => {
+  const el = document.body.classList.contains("popup-open") ? $("#popup") : $("#panel");
+  document.documentElement.style.setProperty("--sheet-h", phone.matches ? `${el.offsetHeight}px` : "0px");
+};
+new ResizeObserver(syncSheetHeight).observe($("#panel"));
+new ResizeObserver(syncSheetHeight).observe($("#popup"));
+phone.addEventListener("change", syncSheetHeight);
 buildTimeControls();
 syncTime();
 
@@ -521,13 +562,26 @@ function showPopup(feature, lngLat) {
     ${timeline}
     <ul class="rules">${rows || "<li class='dim'>No sign data recorded for this curb.</li>"}</ul>`;
   $("#popup").classList.remove("hidden");
+  document.body.classList.add("popup-open");
+  syncSheetHeight();
   $("#popup .x").onclick = hidePopup;
   select(feature.id);
   const pt = map.project(lngLat);
   const el = $("#popup");
   const W = el.offsetWidth || 300, H = el.offsetHeight || 200;
+  if (phone.matches) {
+    // The popup is a bottom sheet here; slide the curb up into the open map above it if the sheet would cover it.
+    const room = innerHeight - H;
+    if (pt.y > room - 24) { keepPopup = true; map.panBy([0, pt.y - room / 2], { duration: 300 }); map.once("moveend", () => (keepPopup = false)); }
+    return;
+  }
   el.style.left = Math.min(Math.max(12, pt.x - W / 2), innerWidth - W - 12) + "px";
   el.style.top = Math.max(12, pt.y - H - 18) + "px";
 }
-function hidePopup() { $("#popup").classList.add("hidden"); select(null); }
-map.on("move", hidePopup);
+let keepPopup = false;
+function hidePopup() {
+  $("#popup").classList.add("hidden"); select(null);
+  document.body.classList.remove("popup-open");
+  syncSheetHeight();
+}
+map.on("move", () => keepPopup || hidePopup());

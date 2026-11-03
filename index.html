@@ -12,6 +12,7 @@
     <div id="map"></div>
 
     <aside id="panel">
+      <button id="sheetHandle" class="sheet-handle" type="button" aria-label="Show more options" aria-expanded="false"></button>
       <header>
         <div class="titlebar">
           <h1>Boston</h1>
@@ -43,13 +44,13 @@
         </div>
       </section>
 
-      <section class="card">
+      <section class="card rules-card">
         <h2>Rules</h2>
         <ul id="legend" class="legend"></ul>
         <p id="stayKey" class="stay-key" hidden><span class="k-fade"></span>doesn't last your stay <span class="k-dots"></span>gets better</p>
       </section>
 
-      <section class="card">
+      <section class="card layers">
         <h2>Layers</h2>
         <label class="toggle"><input type="checkbox" id="showMeters" /> <span>Parking meters</span></label>
         <label class="toggle"><input type="checkbox" id="showLabels" checked /> <span>Street names</span></label>

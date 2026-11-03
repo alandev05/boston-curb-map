@@ -96,6 +96,25 @@ describe("snapZones", () => {
     const xs = f.geometry.coordinates.map((c) => P.fwd(c)[0] - P.fwd(at(0, 0))[0]);
     expect(Math.max(...xs)).toBeCloseTo(30, 0);
   });
+  it("stops a side street's curb short of a main road it meets at a shallow angle", () => {
+    // Like Fencourt St into Huntington Ave: a service road meets the primary at 50°, ending on its centerline.
+    const u = [-Math.cos(Math.PI * 50 / 180), Math.sin(Math.PI * 50 / 180)], n = [u[1], -u[0]];
+    const along = (s, o = 0) => at(s * u[0] + o * n[0], s * u[1] + o * n[1]);
+    const roads = [{ cls: "primary", coords: [at(-200, 0), at(200, 0)] }, { cls: "service", coords: [along(0), along(90)] }];
+    const f = snapZones([zone([along(70, 4), along(1, 4)])], roads).features[0];
+    expect(f.properties._rc).toBe("service");
+    // Drawn 2.75 m off the service centerline, the end must clear the primary's 6 m half-width + setback.
+    const minY = Math.min(...ys(f));
+    expect(minY).toBeGreaterThan(4);
+  });
+  it("doesn't trim a curb where its own street bends onto its next way", () => {
+    // Two ways of one street joined at a node no other road touches, bending 40°.
+    const b = [Math.cos(Math.PI * 40 / 180), Math.sin(Math.PI * 40 / 180)];
+    const roads = [{ cls: "minor", coords: [at(-200, 0), at(0, 0)] }, { cls: "minor", coords: [at(0, 0), at(100 * b[0], 100 * b[1])] }];
+    const f = snapZones([zone([at(-60, 5), at(0, 5)])], roads).features[0];
+    const xs = f.geometry.coordinates.map((c) => P.fwd(c)[0] - P.fwd(at(0, 0))[0]);
+    expect(Math.max(...xs)).toBeGreaterThan(-1);
+  });
   it("pulls a curb that won't snap but floats off the road onto the road's drawn edge", () => {
     // Runs off at 45° (fails the heading test on both passes), ending 22 m out — far beyond the 4.75 m half-width.
     const f = snapZones([zone([at(-90, 2), at(-70, 22)])], ROADS).features[0];

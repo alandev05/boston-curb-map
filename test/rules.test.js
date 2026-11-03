@@ -1,11 +1,18 @@
 import { describe, it, expect } from "vitest";
-import { spanActive, policyActive, categorize, verdict, fmtRate, fmtSpan, dayKey, CATEGORIES, cityHolidays, cityHoliday, nextDate, ruleOf, stayWindow, evaluateStay, isStreetCleaning, collapsePolicies, overriddenBy, allowedFor } from "../src/rules.js";
+import { spanActive, policyActive, categorize, verdict, fmtRate, fmtSpan, dayKey, CATEGORIES, cityHolidays, cityHoliday, nextDate, ruleOf, stayWindow, evaluateStay, isStreetCleaning, collapsePolicies, overriddenBy, allowedFor, reasonOf, daySchedule, fmtSpanShort } from "../src/rules.js";
 
 const span = (o) => ({ days_of_week: ["mon", "tue", "wed", "thu", "fri", "sat"], time_of_day_start: "08:00", time_of_day_end: "20:00", ...o });
 const M = (h, m = 0) => h * 60 + m;
 
 describe("spanActive", () => {
   it("is always active when span is missing", () => expect(spanActive(undefined, "sun", 0)).toBe(true));
+  it("treats a 12:01 AM start as midnight (how signs say \"from midnight\")", () => {
+    const span = { days_of_week: ["mon"], time_of_day_start: "00:01", time_of_day_end: "07:00" };
+    expect(spanActive(span, "mon", 0)).toBe(true);
+    expect(spanActive(span, "mon", 6 * 60 + 59)).toBe(true);
+    expect(spanActive(span, "mon", 7 * 60)).toBe(false);
+    expect(spanActive(span, "sun", 23 * 60 + 59)).toBe(false); // Sunday night isn't Monday's rule
+  });
   it("respects day of week", () => {
     expect(spanActive(span(), "mon", M(10))).toBe(true);
     expect(spanActive(span(), "sun", M(10))).toBe(false);
@@ -422,5 +429,35 @@ describe("accessible and resident-permit rules on the same stretch", () => {
   it("an accessible rule is never folded away as overridden, and never folds others", () => {
     expect(overriddenBy(acc, [res, acc])).toBeNull();
     expect(overriddenBy({ ...res, priority: 90 }, [{ ...acc, priority: 1 }])).toBeNull();
+  });
+});
+
+describe("reasonOf", () => {
+  it("reads why a curb is no stopping from the city's description", () => {
+    expect(reasonOf({ description: "* No Stopping Fire Hydrant" })).toBe("fire hydrant");
+    expect(reasonOf({ description: "* 2-Hour Parking\n* No Stopping Bus Stop" })).toBe("bus stop");
+    expect(reasonOf({ description: "* No Parking 8:00 AM-12:00 PM" })).toBeNull();
+    expect(reasonOf({ reason: "fire hydrant" })).toBe("fire hydrant"); // from the build's bundle
+  });
+});
+
+describe("daySchedule", () => {
+  const sum = (blocks) => blocks.map((b) => `${b.from}-${b.to}:${b.v.category}`);
+  it("splits a weekday into the resident night, the meter day and the evening", () => {
+    // Tue: Mon-night resident rule runs to 8 AM, meter 8 AM–6 PM, Tue-night resident rule from 6 PM.
+    expect(sum(daySchedule(exZone, EX, "tue", at("2026-11-03T12:00:00")))).toEqual(["0-480:resident", "480-1080:paid", "1080-1440:resident"]);
+  });
+  it("Sunday: the meter is off all day and no resident rule starts", () => {
+    expect(sum(daySchedule(exZone, EX, "sun", at("2026-11-08T12:00:00")))).toEqual(["0-1440:free"]);
+  });
+});
+
+describe("fmtSpanShort (popup tags)", () => {
+  it("is compact: weeks of the month, shared AM/PM, months", () => {
+    expect(fmtSpanShort({ days_of_week: ["wed"], weeks_of_month: [1, 3, 5], time_of_day_start: "12:00", time_of_day_end: "16:00", months: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12] })).toBe("1st, 3rd & 5th Wed · 12–4 PM · Mar–Dec");
+    expect(fmtSpanShort({ days_of_week: ["sun"], time_of_day_start: "06:00", time_of_day_end: "20:00" })).toBe("Sun · 6 AM–8 PM");
+  });
+  it("names event-only rules by the event", () => {
+    expect(fmtSpanShort({ time_of_day_start: "00:00", time_of_day_end: "00:00", designated_period: '{"snow emergency"}' })).toBe("during snow emergencies");
   });
 });

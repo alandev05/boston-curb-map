@@ -1,7 +1,7 @@
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./style.css";
-import { CATEGORIES, verdict, fmtRate, fmtSpan, dayKey, isRealPolicy, isMetered, isStreetCleaning, ruleOf, categorize, collapsePolicies, overriddenBy, catColor, shade, cityHoliday, stayWindow, evaluateStay } from "./rules.js";
+import { CATEGORIES, verdict, daySchedule, policyActive, fmtSpanShort, fmtTime, fmtRate, fmtSpan, dayKey, isRealPolicy, isStreetCleaning, ruleOf, collapsePolicies, overriddenBy, reasonOf, catColor, shade, cityHoliday, stayWindow, evaluateStay } from "./rules.js";
 import { DEMO_ZONES, DEMO_POLICIES } from "./demo.js";
 import { buildStyle, curbPaint, LABEL_LAYERS, METER_LAYERS, CURB_LAYERS, CURB_FADE_ZOOM, CURB_ZOOM, NO_DATA_ZOOM } from "./basemap.js";
 import { CODES, CATEGORY_OF, SLOT_MIN } from "./schedule.js";
@@ -14,12 +14,11 @@ const store = { get: (k) => { try { return localStorage.getItem(k); } catch { re
 let policies = {};                 // curb_policy_id -> policy
 let rulesets = [];                 // tiles: rs -> "id,id,…" (every distinct set of rule ids a curb carries)
 const selected = new Set();        // legend: empty = show every rule; otherwise only these categories
-// Time: by default the map follows the clock ("live"). Picking a start in the time panel pins it; a stay length
-// (minutes, 0 = just this moment) switches the map to grading each curb for the whole stay.
+// Time: by default the map follows the clock ("live"). Picking a day or time in the time panel pins it.
 let live = true;
 let pinned = null;                 // Date, when not live
-let stayMin = 0;
-const profile = { permit: store.get("permit") === "1", placard: store.get("placard") === "1" };
+// Curbs are graded for a driver with no resident permit and no disability placard.
+const PROFILE = { permit: false, placard: false };
 const startTime = () => (live ? new Date() : new Date(pinned));
 const minuteOf = (d) => d.getHours() * 60 + d.getMinutes();
 const holidayName = () => cityHoliday(startTime());
@@ -50,10 +49,10 @@ document.documentElement.dataset.theme = theme;
 // per-feature state. Small integers keep each table ~20 KB; an array lookup is O(1) where slicing a long string
 // (the first version) copied the whole string per curb per expression, seconds of worker time per tile.
 // api mode writes the same results into each feature's `cat`/`fit` properties.
-const CATS = Object.keys(CODES), FITS = ["o", "b", "x"];
-let grades = { key: "", cat: [], fit: [] };
+const CATS = Object.keys(CODES);
+let grades = { key: "", cat: [] };
 // Includes the data mode and rule-set count, so grades made before the data arrived are never reused.
-const stayKey = () => `${mode}|${rulesets.length}|${Math.floor(startTime().getTime() / 60000)}|${stayMin}|${+profile.permit}|${+profile.placard}`;
+const gradeKey = () => `${mode}|${rulesets.length}|${Math.floor(startTime().getTime() / 60000)}`;
 // (rs and the tables come from the same build — every URL is versioned — but an out-of-range index would make
 // MapLibre fall back to black, so it's guarded.)
 const lookup = (table, values, fallback) => ["case", ["<", ["coalesce", ["get", "rs"], table.length], table.length],
@@ -61,10 +60,8 @@ const lookup = (table, values, fallback) => ["case", ["<", ["coalesce", ["get", 
 // Not graded yet (or api mode): the weekly-dominant category baked into the tile.
 const domCat = ["match", ["coalesce", ["get", "dom"], "u"], ...Object.entries(CODES).flatMap(([k, c]) => [c, k]), "unknown"];
 const catKey = () => (mode !== "tiles" ? ["coalesce", ["get", "cat"], "unknown"] : grades.cat.length ? lookup(grades.cat, CATS, "unknown") : domCat);
-const FIT_CODE = { ok: "o", better: "b", breaks: "x", no: "x" };
-const fitKey = () => (mode !== "tiles" ? ["coalesce", ["get", "fit"], "o"] : grades.fit.length ? lookup(grades.fit, FITS, "o") : "o");
-// The expressions below refer to ["var","cat"] / ["var","fit"]; curbPaint binds them once per paint property.
-const CAT = ["var", "cat"], FIT = ["var", "fit"];
+// The expressions below refer to ["var","cat"]; curbPaint binds it once per paint property.
+const CAT = ["var", "cat"];
 const highlightExpr = ["any", ["boolean", ["feature-state", "hover"], false], ["boolean", ["feature-state", "selected"], false]];
 function colorExprFor() {
   const key = CAT, fallback = catColor("unknown", theme);
@@ -73,13 +70,10 @@ function colorExprFor() {
 }
 function gateExprFor() {
   const picked = [...selected, ...(selected.has("accessible") ? ["accessible_permit"] : [])];
-  const sel = selected.size ? ["case", ["in", CAT, ["literal", picked]], 1, 0] : 1;
-  const fade = stayMin ? ["match", FIT, "x", 0.22, 1] : 1;
-  return sel === 1 && fade === 1 ? 1 : ["*", sel, fade];
+  return selected.size ? ["case", ["in", CAT, ["literal", picked]], 1, 0] : 1;
 }
 const paintOpts = () => ({
-  colorExpr: colorExprFor(), dimExpr: ["==", CAT, "unknown"], gateExpr: gateExprFor(),
-  betterExpr: stayMin ? ["==", FIT, "b"] : false, bind: ["cat", catKey(), "fit", fitKey()],
+  colorExpr: colorExprFor(), dimExpr: ["==", CAT, "unknown"], gateExpr: gateExprFor(), bind: ["cat", catKey()],
 });
 function styleOpts() {
   const tiles = mode === "tiles" && manifest ? { url: location.origin + manifest.tile_url, minzoom: manifest.minzoom, maxzoom: manifest.maxzoom, bounds: manifest.bbox, meters: manifest.meters > 0 } : null;
@@ -198,24 +192,23 @@ function select(id) {
 }
 
 // ---------- grading ----------
-// With no stay it grades the single moment. Only reruns when the time, stay or "I have" toggles change.
+// Grades the chosen moment. Only reruns when the time changes.
 function gradeAll() {
-  const key = stayKey();
+  const key = gradeKey();
   if (grades.key === key) return false;
-  const steps = stayWindow(startTime(), stayMin || 1), grade = (pids) => evaluateStay({ curb_policy_ids: pids ? pids.split(",") : [] }, policies, steps, profile);
+  const steps = stayWindow(startTime(), 1), grade = (pids) => evaluateStay({ curb_policy_ids: pids ? pids.split(",") : [] }, policies, steps, PROFILE);
   if (mode === "tiles") {
     const catIx = Object.fromEntries(CATS.map((c, i) => [c, i])), unknown = catIx.unknown;
-    const cat = new Array(rulesets.length), fit = new Array(rulesets.length);
-    rulesets.forEach((pids, i) => { const r = grade(pids); cat[i] = catIx[r.worst] ?? unknown; fit[i] = FITS.indexOf(FIT_CODE[r.fit] || "o"); });
-    grades = { key, cat, fit };
+    const cat = rulesets.map((pids) => catIx[grade(pids).worst] ?? unknown);
+    grades = { key, cat };
   } else {
     const byRules = new Map();
     for (const ft of zones.values()) {
       const pids = (ft.properties.curb_policy_ids || []).join(",");
       let r = byRules.get(pids); if (!r) byRules.set(pids, (r = grade(pids)));
-      ft.properties.cat = r.worst; ft.properties.fit = FIT_CODE[r.fit] || "o";
+      ft.properties.cat = r.worst;
     }
-    grades = { key, cat: [], fit: [] };
+    grades = { key, cat: [] };
   }
   return true;
 }
@@ -339,70 +332,66 @@ function syncLegend() {
 }
 
 // ---------- UI: time ----------
+// A day picker and a time-of-day slider. The map follows the clock until either is touched; "Now" goes back to it.
 const fmtClock = (d) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 const fmtDay = (d) => d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-const fmtDur = (m) => (m < 60 ? `${m} min` : `${+(m / 60).toFixed(1)} hr`);
 const midnight = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-const STAYS = [30, 60, 120, 180, 240, 480];
-
+const DAYS = 7;
+const dayOffset = (t) => Math.round((midnight(t) - midnight(new Date())) / 86400000);
+const dayName = (t, i = dayOffset(t)) => (i === 0 ? "Today" : i === 1 ? "Tomorrow" : fmtDay(t).split(",")[0]);
+let builtFor = 0;
+// Day picker: a button and a listbox of the next DAYS days (a native <select> can't be styled to match).
 function buildTimeControls() {
   const today = midnight(new Date());
-  $("#dateSel").innerHTML = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(today); d.setDate(d.getDate() + i);
-    return `<option value="${i}">${i === 0 ? "Today" : i === 1 ? "Tomorrow" : fmtDay(d)}</option>`;
+  builtFor = today.getTime();
+  $("#dayList").innerHTML = Array.from({ length: DAYS }, (_, i) => {
+    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i);
+    return `<li role="option" id="day-${i}" data-i="${i}" aria-selected="false">${i < 2 ? `${dayName(d, i)}<small>${fmtDay(d).split(", ")[1] || ""}</small>` : fmtDay(d)}</li>`;
   }).join("");
-  $("#timeSel").innerHTML = Array.from({ length: (24 * 60) / SLOT_MIN }, (_, i) => {
-    const d = new Date(today.getTime() + i * SLOT_MIN * 60000);
-    return `<option value="${i * SLOT_MIN}">${fmtClock(d)}</option>`;
-  }).join("");
-  $("#stayChips").innerHTML = STAYS.map((m) => `<button type="button" data-min="${m}" aria-pressed="false">${fmtDur(m).replace(" hr", "h").replace(" min", "m")}</button>`).join("") +
-    `<button type="button" data-min="custom" aria-pressed="false">…</button>`;
 }
-function pinFromControls() {
-  const d = midnight(new Date()); d.setDate(d.getDate() + +$("#dateSel").value);
+function pin(dayIdx, minute) {
+  const now = new Date();
   live = false;
-  pinned = new Date(d.getTime() + +$("#timeSel").value * 60000);
-  syncTime();
+  pinned = new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayIdx, 0, minute); // DST-safe
 }
-// Slider: Now (0) through the end of tomorrow in half-hour steps, measured from the current half hour, so dragging
-// past the midnight mark rolls into the next day. The day/time selects below still reach the rest of the week.
-const sliderBase = () => { const slot = SLOT_MIN * 60000; return Math.floor(Date.now() / slot) * slot; };
-function syncSlider() {
-  const base = sliderBase(), now = new Date(base), el = $("#timeSlider");
-  const tomorrow = midnight(now); tomorrow.setDate(tomorrow.getDate() + 1);
-  const end = new Date(tomorrow); end.setDate(end.getDate() + 1);
-  const max = Math.round((end - base) / 60000) - SLOT_MIN;
-  el.max = String(max); el.step = String(SLOT_MIN);
-  el.value = String(live ? 0 : Math.max(0, Math.min(max, Math.round((pinned - base) / 60000))));
-  const mid = (((tomorrow - base) / 60000) / max) * 100;
-  $("#midMark").style.left = `${mid}%`;
-  $("#midMark").style.visibility = mid < 14 ? "hidden" : ""; // late at night it would sit on top of "Now"
-  $("#endMark").textContent = fmtDay(tomorrow).split(",")[0];
-  const t = startTime();
-  $("#sliderOut").textContent = live ? "· now" : `· ${midnight(t).getTime() === midnight(now).getTime() ? "Today" : midnight(t).getTime() === tomorrow.getTime() ? "Tomorrow" : fmtDay(t).split(",")[0]} ${fmtClock(t)}`;
+const dayIdx = () => Math.max(0, Math.min(DAYS - 1, dayOffset(startTime())));
+function setDayList(open) {
+  $("#dayList").hidden = !open;
+  $("#dayBtn").setAttribute("aria-expanded", String(open));
+  if (open) { highlightDay(dayIdx()); $("#dayList").focus(); }
 }
+let activeDay = 0;
+function highlightDay(i) {
+  activeDay = (i + DAYS) % DAYS;
+  for (const li of $("#dayList").children) li.classList.toggle("active", +li.dataset.i === activeDay);
+  $("#dayList").setAttribute("aria-activedescendant", `day-${activeDay}`);
+}
+function pickDay(i) { pin(i, minuteOf(startTime())); setDayList(false); $("#dayBtn").focus(); syncTime(); }
+$("#dayBtn").addEventListener("click", () => setDayList($("#dayList").hidden));
+$("#dayList").addEventListener("click", (e) => { const li = e.target.closest("li[data-i]"); if (li) pickDay(+li.dataset.i); });
+$("#dayList").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); highlightDay(activeDay + (e.key === "ArrowDown" ? 1 : -1)); }
+  else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickDay(activeDay); }
+  else if (e.key === "Escape" || e.key === "Tab") { setDayList(false); $("#dayBtn").focus(); }
+});
+document.addEventListener("pointerdown", (e) => { if (!$("#dayList").hidden && !e.target.closest(".daypick")) setDayList(false); });
 let sliderFrame = 0;
 $("#timeSlider").addEventListener("input", (e) => {
-  const v = +e.target.value;
-  live = v === 0; pinned = live ? null : new Date(sliderBase() + v * 60000);
+  pin(dayIdx(), +e.target.value);
   cancelAnimationFrame(sliderFrame);
   sliderFrame = requestAnimationFrame(syncTime); // one recolor per frame while dragging
 });
-function setStay(m) { stayMin = m; syncTime(); }
 function syncTime() {
+  if (midnight(new Date()).getTime() !== builtFor) buildTimeControls(); // "Today" moved on
   const t = startTime(), hol = holidayName(), day = dayKey(t);
-  const isToday = midnight(t).getTime() === midnight(new Date()).getTime();
-  $("#whenLabel").textContent = `${live ? "Now · " : ""}${isToday && !live ? "Today" : fmtDay(t).split(",")[0]} ${fmtClock(t)}${stayMin ? ` · stay ${fmtDur(stayMin)}` : ""}`;
+  $("#whenLabel").textContent = `${dayName(t)} ${fmtClock(t)}`;
   $("#dateNote").textContent = hol ? `${hol} — meters free` : day === "sun" ? "Meters free on Sundays" : "";
-  // Panel mirrors the state: live shows today + the current half hour.
-  const dayIdx = Math.round((midnight(t) - midnight(new Date())) / 86400000);
-  $("#dateSel").value = String(Math.max(0, Math.min(6, dayIdx)));
-  $("#timeSel").value = String(Math.floor(minuteOf(t) / SLOT_MIN) * SLOT_MIN);
-  const custom = stayMin && !STAYS.includes(stayMin);
-  for (const b of document.querySelectorAll("#stayChips button")) b.setAttribute("aria-pressed", b.dataset.min === "custom" ? String(!!custom || !$("#stayCustomWrap").hidden) : String(+b.dataset.min === stayMin));
-  syncSlider();
-  $("#nowBtn").hidden = live && !stayMin;
-  $("#stayKey").hidden = !stayMin;
+  const di = dayIdx(), opt = $(`#day-${di}`);
+  $("#dayLabel").textContent = opt ? opt.firstChild.textContent : dayName(t);
+  for (const li of $("#dayList").children) li.setAttribute("aria-selected", String(+li.dataset.i === di));
+  $("#timeSlider").value = String(minuteOf(t));
+  $("#sliderOut").textContent = fmtClock(t);
+  $("#nowBtn").hidden = live;
   repaint();
 }
 $("#whenBtn").addEventListener("click", () => {
@@ -411,38 +400,16 @@ $("#whenBtn").addEventListener("click", () => {
   $("#whenPanel").hidden = !open;
   $("#whenBtn").setAttribute("aria-expanded", String(open));
 });
-$("#dateSel").addEventListener("change", pinFromControls);
-$("#timeSel").addEventListener("change", pinFromControls);
-$("#stayChips").addEventListener("click", (e) => {
-  const b = e.target.closest("button"); if (!b) return;
-  if (b.dataset.min === "custom") {
-    const wrap = $("#stayCustomWrap"); wrap.hidden = !wrap.hidden;
-    if (!wrap.hidden) { $("#stayCustom").focus(); return; }
-    return setStay(0);
-  }
-  $("#stayCustomWrap").hidden = true;
-  const m = +b.dataset.min;
-  setStay(stayMin === m ? 0 : m); // tap the selected chip again to go back to "just this moment"
-});
-$("#stayCustom").addEventListener("change", (e) => {
-  const h = Math.max(0.5, Math.min(24, +e.target.value || 0));
-  e.target.value = h;
-  setStay(Math.ceil((h * 60) / SLOT_MIN) * SLOT_MIN);
-});
-$("#nowBtn").addEventListener("click", () => {
-  live = true; pinned = null; $("#stayCustomWrap").hidden = true; $("#stayCustom").value = "";
-  setStay(0);
-});
-for (const [id, k] of [["#hasPermit", "permit"], ["#hasPlacard", "placard"]]) {
-  $(id).checked = profile[k];
-  $(id).addEventListener("change", (e) => { profile[k] = e.target.checked; store.set(k, e.target.checked ? "1" : "0"); repaint(); });
-}
-// Live mode keeps up with the clock: relabel every minute, recolor when the half hour (or a stay's start) moves.
+$("#nowBtn").addEventListener("click", () => { live = true; pinned = null; syncTime(); });
+// Live mode keeps up with the clock: relabel every 15 s, recolor when the half hour moves.
 let lastTick = "";
 setInterval(() => {
   if (!live) return;
-  const t = new Date(), tick = stayMin ? String(Math.floor(t / 60000)) : `${dayKey(t)}${Math.floor(minuteOf(t) / SLOT_MIN)}`;
-  if (tick !== lastTick) { lastTick = tick; syncTime(); } else $("#whenLabel").textContent = `Now · ${fmtDay(t).split(",")[0]} ${fmtClock(t)}${stayMin ? ` · stay ${fmtDur(stayMin)}` : ""}`;
+  const t = new Date(), tick = `${dayKey(t)}${Math.floor(minuteOf(t) / SLOT_MIN)}`;
+  if (tick !== lastTick) { lastTick = tick; syncTime(); return; }
+  $("#whenLabel").textContent = `${dayName(t)} ${fmtClock(t)}`;
+  $("#sliderOut").textContent = fmtClock(t);
+  $("#timeSlider").value = String(minuteOf(t));
 }, 15000);
 
 // ---------- UI: layers, theme, panel ----------
@@ -577,20 +544,13 @@ function zoneFromFeature(feature) {
   return zones.get(feature.id)?.properties || feature.properties;
 }
 
-// One line on how the stay goes, for the popup header.
-function stayHeadline(r) {
-  const label = (c) => CATEGORIES[c]?.label.toLowerCase() || c;
-  if (r.fit === "ok") return "Works for your whole stay";
-  if (r.fit === "better") return `Gets better — ${label(r.reason.cat)} from ${fmtClock(r.at)}`;
-  if (r.fit === "breaks") return r.reason.kind === "limit" ? `Doesn't last — ${fmtStay(r.reason.max)} limit, move by ${fmtClock(r.at)}` : `Doesn't last — ${label(r.reason.cat)} from ${fmtClock(r.at)}`;
-  return `Not for you at ${fmtClock(r.at)} — ${label(r.reason.cat)}`;
-}
-
 // "No parking except resident_permit" → "Resident permit only". Returns HTML-safe pieces.
 function ruleBits(pol) {
   const rule = ruleOf(pol);
   const only = /^no /i.test(rule.activity || "") && rule.user_classes_except?.length;
   const bits = [isStreetCleaning(pol) ? "Street cleaning · tow zone" : esc(only ? `${cap(rule.user_classes_except.join(" or "))} only` : cap(rule.activity || "Rule"))];
+  const why = !only && /^no /i.test(rule.activity || "") && reasonOf(pol);
+  if (why) bits.push(why);
   if (rule.max_stay) bits.push(`${fmtStay(rule.max_stay)} max`);
   const rate = fmtRate(rule); if (rate) bits.push(rate);
   if (rule.user_classes?.length) bits.push(esc(rule.user_classes.map(pretty).join(", ")));
@@ -603,47 +563,43 @@ function showPopup(feature, lngLat) {
   const t = startTime(), day = dayKey(t), minute = minuteOf(t);
   const hol = holidayName(), meterFree = day === "sun" || !!hol;
   const v = verdict(p, policies, day, minute, { meterFree, date: t });
-  let category = v.category;
-  let blurb = CATEGORIES[category].blurb, timeline = "";
-  if (stayMin) {
-    const r = evaluateStay(p, policies, stayWindow(t, stayMin), profile);
-    category = r.worst;
-    blurb = stayHeadline(r);
-    if (r.timeline.length > 1 || r.fit !== "ok") timeline = `<ul class="timeline">${r.timeline.map((s) =>
-      `<li style="--c:${catColor(s.cat, theme)}"><i></i><span>${fmtClock(s.from)}–${fmtClock(s.to)}</span>${esc(CATEGORIES[s.cat].label)}</li>`).join("")}</ul>`;
-  }
-  const cat = CATEGORIES[category];
-  // Only real rules, highest precedence first (CDS: lower priority number wins). The one deciding the color now is marked "Now".
-  const ids = (p.curb_policy_ids || []).filter((id) => !policies[id] || isRealPolicy(policies[id]));
-  const all = ids.map((id) => policies[id]).filter(Boolean).sort((a, b) => (a.priority ?? 1000) - (b.priority ?? 1000));
-  // Rules a higher-precedence, always-in-force rule overrides never apply: listed once, muted, at the end.
-  const over = all.map((pol) => ({ pol, by: overriddenBy(pol, all) })).filter((o) => o.by);
-  const pols = all.filter((pol) => !over.some((o) => o.pol === pol));
-  // The same rule listed again for a subset of its times collapses into the broader one.
-  const winner = v.policy;
-  // An accessible-only rule and a resident-only rule on the same stretch are shown as one line: the feed doesn't say
-  // whether you need either or both, so the map grades it as both and says so.
-  const entries = collapsePolicies(pols), kindOfEntry = (e) => categorize(ruleOf(e.policy));
-  const accE = entries.find((e) => kindOfEntry(e) === "accessible"), resE = entries.find((e) => kindOfEntry(e) === "resident");
-  if (accE && resE) { accE.merged = resE.policy; accE.absorbed.push(resE.policy, ...resE.absorbed); entries.splice(entries.indexOf(resE), 1); }
-  const rows = entries.map(({ policy: pol, absorbed, merged }) => {
-    const wins = pol === winner || absorbed.includes(winner);
-    const bits = merged ? ["Accessible space · resident permit also posted"] : ruleBits(pol);
-    let spans = spansText(pol);
-    if (merged) spans = (spansText(merged) === spans ? spans : `${spans} (accessible); ${spansText(merged)} (permit)`) + " · the city's data doesn't say whether you need one or both — check the sign";
-    if (isMetered(pol)) spans += " · free Sundays & City holidays";
-    if (wins && v.meterFree) bits.unshift(`<span class="free">Free ${live ? "now" : "then"}${hol ? ` (${esc(hol)})` : day === "sun" ? " (Sunday)" : " (outside meter hours)"}</span>`);
-    return `<li class="${wins ? "on" : "dim"}"><b>${bits.join(" · ")}</b><br><span>${esc(spans)}</span>${wins ? `<em>${live ? "Now" : fmtClock(t)}</em>` : ""}</li>`;
-  }).join("") + (over.length ? `<li class="dim overridden"><b>Doesn't apply here</b><br><span>${over.map(({ pol }) =>
-    `${ruleBits(pol).join(" · ")} (${esc(spansText(pol))})`).join("; ")} — ${esc(ruleBits(over[0].by).join(" · "))} takes precedence ${spansText(over[0].by) === "Every day, all day" ? "at all times" : "at all those times"}.</span></li>` : "");
-  const title = [p.street_name, p.street_side ? `${p.street_side} side` : null].filter(Boolean).join(" · ") || "Curb zone";
+  const category = v.category, cat = CATEGORIES[category], blurb = cat.blurb;
+  // The selected day in order: one row per stretch of time, the one at the chosen time marked.
+  const blocks = daySchedule(p, policies, day, t, { meterFree });
+  const clock = (m) => fmtTime(`${Math.floor(m / 60)}:${m % 60}`);
+  const blockLabel = ({ v: b }) => {
+    if (b.category === "accessible_permit") return "Accessible space · resident permit also posted";
+    if (!b.policy) return "No posted rule";
+    if (b.meterFree) return `Free${hol ? ` (${esc(hol)})` : day === "sun" ? " (Sunday)" : ""}`;
+    const bits = ruleBits(b.policy);
+    if (b.category === "free" && bits[0] === "Parking") bits[0] = "Free parking";
+    return bits.join(" · ");
+  };
+  const hasRules = (p.curb_policy_ids || []).some((id) => policies[id] && isRealPolicy(policies[id]));
+  const rows = !hasRules ? "" : blocks.map((b) => {
+    const on = minute >= b.from && minute < b.to;
+    return `<li class="${on ? "on" : ""}${b.v.policy ? "" : " none"}" style="--c:${catColor(b.v.category, theme)}"><span>${b.from === 0 && b.to === 1440 ? "All day" : `${clock(b.from)} – ${clock(b.to)}`}</span><b>${blockLabel(b)}</b>${on ? `<em>${live ? "Now" : fmtClock(t)}</em>` : ""}</li>`;
+  }).join("");
+  // Rules not in force at any time this day (other weekdays, other months, snow emergencies): one tag each.
+  const all = (p.curb_policy_ids || []).map((id) => policies[id]).filter((pol) => pol && isRealPolicy(pol));
+  const today = (pol) => Array.from({ length: 48 }, (_, k) => k * 30).some((m) => policyActive(pol, day, m, t));
+  // Tags lead with the rule ("Street cleaning"), then when ("1st & 3rd Wed · 12–4 PM · Mar–Dec").
+  const what = (pol) => (isStreetCleaning(pol) ? "Street cleaning" : ruleBits(pol).join(" · "));
+  const tags = collapsePolicies(all.filter((pol) => !today(pol) && !overriddenBy(pol, all))).map(({ policy: pol }) => {
+    const when = (pol.time_spans?.length ? pol.time_spans : [null]).map(fmtSpanShort).join("; ");
+    return `<li><b>${what(pol)}</b> ${esc(when)}</li>`;
+  }).join("");
+  // Signs the build found cover only part of this curb ("~id": a hydrant on a metered block): listed, not graded.
+  const partial = collapsePolicies((p.curb_policy_ids || []).filter((id) => String(id).startsWith("~")).map((id) => policies[id.slice(1)]).filter((pol) => pol && isRealPolicy(pol)))
+    .map(({ policy: pol }) => `<li class="part"><b>${what(pol)}</b> on part of this curb</li>`).join("");
+  const title = [p.street_name, p.street_side ? `${p.street_side} side` : null].filter(Boolean).join(" · ");
   $("#popup").innerHTML = `
     <button class="x" aria-label="close">×</button>
-    <div class="verdict" style="--c:${catColor(category, theme)}"><span>${cat.label}</span><small>${esc(blurb)}</small></div>
-    <h3>${esc(title)}</h3>
-    <div class="meta">${p.user_zone_id ? `Zone #${esc(p.user_zone_id)} · ` : ""}${fmtDay(t).split(",")[0]} ${fmtClock(t)}${stayMin ? ` · ${fmtDur(stayMin)} stay` : ""}${demoMode ? " · <b>demo data</b>" : ""}</div>
-    ${timeline}
-    <ul class="rules">${rows || "<li class='dim'>No sign data recorded for this curb.</li>"}</ul>`;
+    <div class="verdict" style="--c:${catColor(category, theme)}"><span>${cat.label}</span>${blurb ? `<small>${esc(blurb)}</small>` : ""}</div>
+    ${title ? `<h3>${esc(title)}</h3>` : ""}
+    <div class="meta">${p.user_zone_id ? `Zone #${esc(p.user_zone_id)} · ` : ""}${fmtDay(t)} · ${fmtClock(t)}${demoMode ? " · <b>demo data</b>" : ""}</div>
+    ${rows ? `<ul class="agenda">${rows}</ul>` : `<p class="empty">No sign data recorded for this curb.</p>`}
+    ${tags || partial ? `<ul class="tags">${partial}${tags}</ul>` : ""}`;
   $("#popup").classList.remove("hidden");
   document.body.classList.add("popup-open");
   syncSheetHeight();

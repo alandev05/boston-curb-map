@@ -22,10 +22,11 @@ import vtpbf from "vt-pbf";
 import { encodeSchedule, dominant } from "../src/schedule.js";
 import { snapZones, lineLength } from "./snap.js";
 import { CURB_FADE_ZOOM, NO_DATA_ZOOM } from "../src/basemap.js";
-import { isRealPolicy } from "../src/rules.js";
+import { isRealPolicy, reasonOf } from "../src/rules.js";
 export { NO_DATA_ZOOM };
 import { loadOsm } from "./osm-roads.js";
 import { parseCsv, assignSweeping } from "./sweeping.js";
+import { assignMeters } from "./meters.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IN = process.env.DATA_DIR || path.join(root, "data", "raw");
@@ -66,10 +67,13 @@ function bboxOf(features) {
 }
 
 export async function buildTiles(features, policies, { out = OUT, log = console.error, meta = {}, meters = [], roads = null, buildings = null, names = null, numbers = null, sweeping = null } = {}) {
+  // Meters first, on the city's own geometry: their schedules become curb rules (scripts/meters.js).
+  policies = { ...policies };
+  const metered = meters.length ? assignMeters(features, policies, meters, { log }) : null;
+  if (metered) features = metered.features;
   const snap = snapZones(features, roads, { buildings });
   if (roads) log(`  snapped ${snap.snapped} of ${features.length} curbs onto road centerlines (${snap.stats.relaxed} on a second, looser pass, ${snap.stats.followed} by following a snapped neighbor); left in place: ${JSON.stringify(snap.stats.unsnapped)} (${snap.stats.clamped} pulled onto the nearest road edge); hidden inside intersections: ${snap.stats.hiddenInIntersection}; hidden (would cross a building, no road): ${snap.stats.hiddenThroughBuildings}`);
   // Street sweeping (city table, no geometry) joins onto the curbs as drawn; adds `sweep-*` policies.
-  policies = { ...policies };
   const sweep = sweeping?.length && names?.length ? assignSweeping(snap.features, policies, sweeping, { names, numbers }, { log }) : null;
   const rulesets = [], prepared = prepare(snap.features, policies, rulesets);
   const bbox = bboxOf(prepared);
@@ -104,12 +108,13 @@ export async function buildTiles(features, policies, { out = OUT, log = console.
   // Popup bundle: policies trimmed to what the UI reads.
   const slimPolicies = Object.fromEntries(Object.entries(policies).map(([id, p]) => [id, {
     curb_policy_id: id, priority: p.priority, rules: (p.rules || []).map((r) => ({ activity: r.activity, max_stay: r.max_stay, max_stay_unit: r.max_stay_unit, user_classes: r.user_classes, user_classes_except: r.user_classes_except, purposes: r.purposes, rate: r.rate || r.rates })), rates: p.rates, time_spans: p.time_spans,
+    ...(reasonOf(p) ? { reason: reasonOf(p) } : {}),
   }]));
   await mkdir(path.join(out, "data"), { recursive: true });
   await writeFile(path.join(out, "data", "policies.json"), JSON.stringify(slimPolicies));
   await writeFile(path.join(out, "data", "rulesets.json"), JSON.stringify(rulesets));
   const built = new Date(), version = built.getTime().toString(36);
-  const manifest = { ...meta, snapped: snap.snapped, sweeping: sweep ? { rows: sweep.rows, matched: sweep.rowsMatched, curbs: sweep.curbsSwept } : null, built_at: built.toISOString(), version, zones: prepared.length, rulesets: rulesets.length, policies: Object.keys(policies).length, meters: meters.length, meters_zoom: METERS_ZOOM, tiles: count, tile_bytes: bytes, bbox, minzoom: MIN_ZOOM, maxzoom: MAX_ZOOM, tile_url: `/tiles/{z}/{x}/{y}.pbf?v=${version}` };
+  const manifest = { ...meta, snapped: snap.snapped, sweeping: sweep ? { rows: sweep.rows, matched: sweep.rowsMatched, curbs: sweep.curbsSwept } : null, built_at: built.toISOString(), version, zones: prepared.length, rulesets: rulesets.length, policies: Object.keys(policies).length, meters: meters.length, meters_on_curbs: metered?.stats.matched ?? 0, meters_zoom: METERS_ZOOM, tiles: count, tile_bytes: bytes, bbox, minzoom: MIN_ZOOM, maxzoom: MAX_ZOOM, tile_url: `/tiles/{z}/{x}/{y}.pbf?v=${version}` };
   await writeFile(path.join(out, "data", "manifest.json"), JSON.stringify(manifest, null, 1));
   return manifest;
 }

@@ -4,19 +4,19 @@
 // Flat, even-weight colors per theme (light = deep tones for a light basemap, dark = soft tones for a dark one),
 // in the spirit of Google Maps' palette: no neon, no glow, every category equally legible.
 export const CATEGORIES = {
-  no_stopping: { label: "No stopping", light: "#d93025", dark: "#f28b82", blurb: "Don't even pause here." },
-  no_parking:  { label: "No parking",  light: "#e8710a", dark: "#fcad70", blurb: "Drop-off/pick-up only." },
-  street_cleaning: { label: "Street cleaning", light: "#12a4b8", dark: "#78d9ec", blurb: "Sweeping — tow zone while it runs." },
-  travel:      { label: "Travel lane", light: "#5f6368", dark: "#bdc1c6", blurb: "Rush-hour lane — cars get towed." },
-  loading:     { label: "Loading zone", light: "#e3a008", dark: "#fdd663", blurb: "Commercial loading only." },
-  paid:        { label: "Paid meter", light: "#1a73e8", dark: "#8ab4f8", blurb: "Feed the meter or ParkBoston app." },
-  resident:    { label: "Resident permit", light: "#9334e6", dark: "#c58af9", blurb: "Neighborhood sticker required." },
-  accessible:  { label: "Accessible", light: "#d01884", dark: "#ff8bcb", blurb: "Disability placard only." },
+  no_stopping: { label: "No stopping", light: "#d93025", dark: "#f28b82" },
+  no_parking:  { label: "No parking",  light: "#e8710a", dark: "#fcad70" },
+  street_cleaning: { label: "Street cleaning", light: "#12a4b8", dark: "#78d9ec" },
+  travel:      { label: "Travel lane", light: "#5f6368", dark: "#bdc1c6" },
+  loading:     { label: "Loading zone", light: "#e3a008", dark: "#fdd663" },
+  paid:        { label: "Paid meter", light: "#1a73e8", dark: "#8ab4f8" },
+  resident:    { label: "Resident permit", light: "#9334e6", dark: "#c58af9" },
+  accessible:  { label: "Accessible", light: "#d01884", dark: "#ff8bcb" },
   // An accessible-only rule and a resident-only rule posted on the same short stretch (689 curbs, median 17 m): the
   // feed doesn't say whether you need either or both, so it's graded strictly (both). Shown under "Accessible".
-  accessible_permit: { label: "Accessible + permit", light: "#d01884", dark: "#ff8bcb", blurb: "Placard and resident permit both posted — check the sign.", legend: false },
-  free:        { label: "Free / time-limit", light: "#188038", dark: "#81c995", blurb: "Free, maybe with a time cap." },
-  unknown:     { label: "No data", light: "#9aa0a6", dark: "#80868b", blurb: "No readable sign data for this curb — check the posted sign." },
+  accessible_permit: { label: "Accessible + permit", light: "#d01884", dark: "#ff8bcb", blurb: "Accessible space and resident permit both posted. Check the sign.", legend: false },
+  free:        { label: "Free / time-limit", light: "#188038", dark: "#81c995" },
+  unknown:     { label: "No data", light: "#9aa0a6", dark: "#80868b", blurb: "No sign data for this curb. Check the posted sign." },
 };
 
 // Hover/selected shade: darker on the light map, lighter on the dark one (how Google highlights a route).
@@ -33,6 +33,16 @@ function minutes(hhmm) {
   if (!hhmm) return null;
   const [h, m] = String(hhmm).split(":").map(Number);
   return h * 60 + (m || 0);
+}
+// Why a curb is no stopping / no parking, when the city's description says (the structured rule doesn't):
+// "* No Stopping Fire Hydrant" → "fire hydrant". The build stores it as `reason` (the bundle drops descriptions).
+const REASONS = /^\*?\s*No (?:Stopping|Parking) (Fire Hydrant|Bus Stop|Emergency Use)\b/im;
+export const reasonOf = (pol) => pol.reason ?? pol.description?.match(REASONS)?.[1].toLowerCase() ?? null;
+// Signs say "12:01 AM" to mean "from midnight" (12:00 AM would be ambiguous about which day). Grading a :01 start as
+// :00 keeps those rules in force at the top of the hour, which is what the slider lands on. Display keeps "12:01 AM".
+function startMinutes(hhmm) {
+  const m = minutes(hhmm);
+  return m != null && m % 60 === 1 ? m - 1 : m;
 }
 
 // The feed stores designated periods as Postgres array literals: '{"snow emergency"}', '{holidays}'.
@@ -55,7 +65,7 @@ export function spanActive(span, day, minute, today = new Date(), exact = false)
   if (designatedPeriods(span.designated_period).some((d) => EVENT_PERIODS.test(d))) return false;
   if (span.months?.length && !span.months.includes(today.getMonth() + 1)) return false;
   if (exact && span.weeks_of_month?.length && span.weeks_of_month.length < 5 && !span.weeks_of_month.includes(Math.ceil(today.getDate() / 7))) return false;
-  const s = minutes(span.time_of_day_start), e = minutes(span.time_of_day_end);
+  const s = startMinutes(span.time_of_day_start), e = minutes(span.time_of_day_end);
   const startDay = s != null && e != null && s > e && minute < e ? DAYS[(DAYS.indexOf(day) + 6) % 7] : day;
   if (span.days_of_week?.length && !span.days_of_week.map((d) => d.toLowerCase().slice(0, 3)).includes(startDay)) return false;
   if (s != null && e != null && s === e) { /* 00:00–00:00 = all day */ }
@@ -179,6 +189,26 @@ export function verdict(zone, policies, day, minute, { meterFree = day === "sun"
   return { category: best.free ? "free" : best.k.category, rule: best.k.rule, policy: best.p, meterFree: best.free };
 }
 
+// The curb's day as consecutive blocks: [{ from, to, v }] in minutes (to ≤ 1440), v = verdict for that stretch.
+// The verdict only changes where some rule starts or ends, so it's evaluated once per such boundary and equal
+// neighbours (same category, rule and meter state) are merged.
+export function daySchedule(zone, policies, day, date, { meterFree = day === "sun" } = {}) {
+  const cuts = new Set([0]);
+  for (const id of zone.curb_policy_ids || []) for (const s of policies[id]?.time_spans || []) {
+    const a = startMinutes(s.time_of_day_start), b = minutes(s.time_of_day_end);
+    if (a != null) cuts.add(a % 1440);
+    if (b != null) cuts.add(b % 1440);
+  }
+  const at = [...cuts].sort((x, y) => x - y), blocks = [];
+  at.forEach((from, i) => {
+    const to = at[i + 1] ?? 1440, v = verdict(zone, policies, day, from, { meterFree, date });
+    const last = blocks[blocks.length - 1];
+    if (last && last.v.category === v.category && last.v.policy === v.policy && last.v.meterFree === v.meterFree) last.to = to;
+    else blocks.push({ from, to, v });
+  });
+  return blocks;
+}
+
 // ---------- City of Boston holidays (meters free all day) ----------
 // From boston.gov's City holidays list. Meters are free on the actual date, not the observed weekday
 // (e.g. free Sat July 4, NOT Fri July 3); Juneteenth runs "Sunday parking rules".
@@ -215,6 +245,7 @@ export function fmtRate(rule) {
   const rates = rule.rate || rule.rates || [];
   if (!rates.length) return null;
   const r = rates[0];
+  if (r?.rate == null) return null; // a meter whose rate the data doesn't give
   const dollars = (r.rate / 100).toFixed(2);
   const unit = r.rate_unit || "hour";
   const per = r.rate_unit_period ? ` / ${r.rate_unit_period} ${unit}` : ` / ${unit}`;
@@ -261,6 +292,26 @@ export function fmtSpan(s) {
   return out;
 }
 
+// A compact schedule for a popup tag: "1st, 3rd & 5th Wed · 12–4 PM · Mar–Dec", "Sun · 6 AM–8 PM",
+// "during snow emergencies". Several spans join with "; ".
+const andList = (xs) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} & ${xs[xs.length - 1]}`);
+function fmtRange(a, b) {
+  const x = fmtTime(a || "00:00"), y = fmtTime(b || "24:00");
+  const [xt, xm] = x.split(" "), [yt, ym] = y.split(" ");
+  return xm === ym ? `${xt}–${yt} ${ym}` : `${x}–${y}`;
+}
+export function fmtSpanShort(s) {
+  if (!s) return "every day";
+  const dp = designatedPeriods(s.designated_period);
+  if (dp.length && EVENT_PERIODS.test(dp.join())) return `during ${dp.map((d) => (/emergenc|event|game/.test(d) ? `${d.replace(/y$/, "ie")}s` : d)).join(", ")}`;
+  let days = fmtDays(s.days_of_week);
+  if (s.weeks_of_month?.length && s.weeks_of_month.length < 5) days = `${andList(s.weeks_of_month.map((w) => ORD[w]))} ${days}`;
+  const a = s.time_of_day_start, b = s.time_of_day_end;
+  const parts = [days, !a && !b || (a && b && minutes(a) === minutes(b)) ? "all day" : fmtRange(a, b)];
+  if (s.months?.length && s.months.length < 12) parts.push(fmtMonths(s.months));
+  return parts.join(" · ");
+}
+
 // ---------- collapsing repeated rules (popup) ----------
 // The feed often lists the same rule several times — e.g. "street cleaning, every day 12:01–7 AM" next to
 // "street cleaning, Wed 12:01–7 AM" — which says nothing extra. A policy is redundant when another one with the same
@@ -278,7 +329,7 @@ export function spanCovers(a, b) {
   const aw = a.weeks_of_month?.length < 5 ? a.weeks_of_month : null, bw = b.weeks_of_month?.length < 5 ? b.weeks_of_month : null;
   if (!sameSet(aw, bw)) return false;
   if ((a.start_date && a.start_date !== b.start_date) || (a.end_date && a.end_date !== b.end_date)) return false;
-  const as = minutes(a.time_of_day_start) ?? 0, ae = minutes(a.time_of_day_end) ?? 1440, bs = minutes(b.time_of_day_start) ?? 0, be = minutes(b.time_of_day_end) ?? 1440;
+  const as = startMinutes(a.time_of_day_start) ?? 0, ae = minutes(a.time_of_day_end) ?? 1440, bs = startMinutes(b.time_of_day_start) ?? 0, be = minutes(b.time_of_day_end) ?? 1440;
   if (as === ae || (as === 0 && ae === 1440)) return true; // a runs all day
   if (as === bs && ae === be) return true;
   return as < ae && bs < be && as <= bs && be <= ae; // same-day windows: a's contains b's

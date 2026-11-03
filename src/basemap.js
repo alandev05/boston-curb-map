@@ -14,13 +14,13 @@ export const OFM_GLYPHS = "https://tiles.openfreemap.org/fonts/{fontstack}/{rang
 
 export const PALETTES = {
   light: {
-    bg: "#f3f4f1", water: "#9fd3f0", waterLabel: "#3c7fb1", park: "#cdebd6", parkLabel: "#2e7d4f", commercial: "#f8efdc",
+    bg: "#f3f4f1", water: "#9fd3f0", park: "#cdebd6", commercial: "#f8efdc",
     motorway: "#9fb0c8", major: "#b8c5d6", mid: "#cfd8e3", minor: "#ffffff", casing: "#d9dee5", rail: "#c4c8cf",
     building: "#e7e8ec", buildingLine: "#d9dbe1", label: "#5f6368", labelStrong: "#3c4043", halo: "#ffffff",
     arrow: "#9aa0a6", poi: "#70757a", transit: "#1a73e8", fillOpacity: 0.25, dimOpacity: 0.55,
   },
   dark: {
-    bg: "#1e2024", water: "#16253a", waterLabel: "#6f9fd0", park: "#1d3227", parkLabel: "#6fb88a", commercial: "#24252a",
+    bg: "#1e2024", water: "#16253a", park: "#1d3227", commercial: "#24252a",
     motorway: "#566174", major: "#454c58", mid: "#3a4049", minor: "#30343a", casing: "#1e2024", rail: "#3a3e45",
     building: "#2a2d33", buildingLine: "#33363d", label: "#c4c7cc", labelStrong: "#e8eaed", halo: "#16181b",
     arrow: "#7d828a", poi: "#a3a8ae", transit: "#8ab4f8", fillOpacity: 0.25, dimOpacity: 0.45,
@@ -85,9 +85,7 @@ const roadRank = ["match", ["get", "class"], ...CLASSES.flatMap((c) => [c, ROADS
 // drawn until street level, then only as a faint line, so the known rules carry the picture.
 // Disclosure by zoom: <12 arterials only and no stubs; 12–14 every street, stubs (<20 m, mostly hydrants)
 // hidden; ≥14 everything, split per side; ≥15 no-data curbs appear faintly.
-// gateExpr: a 0–1 multiplier per curb from the UI — 0 for categories filtered out in the legend, and a fade for curbs
-// that won't last a chosen stay. betterExpr: true for curbs that get better during the stay; they carry a dotted
-// stripe (zone-better) down the middle of the line.
+// gateExpr: a 0–1 multiplier per curb from the UI — 0 for categories filtered out in the legend.
 // Level of detail. Zoomed out, a single curb is too small to read or click, and drawing tens of thousands of them is
 // what made zooming slow, so curbs only appear from CURB_FADE_ZOOM, fully drawn and clickable by CURB_ZOOM.
 // "No data" curbs (never anything else) join, dimmed, at NO_DATA_ZOOM.
@@ -95,7 +93,7 @@ export const CURB_FADE_ZOOM = 12, CURB_ZOOM = 12.3, NO_DATA_ZOOM = 14;
 // `bind` (optional): ["name", expr, …] — variables the other expressions use as ["var", name] (the curb's category
 // looked up once per property instead of once per use in the JSON). Each paint value that refers to one is
 // wrapped in a single "let".
-export function curbPaint(theme, { colorExpr = "#888", dimExpr = false, gateExpr = 1, betterExpr = false, bind = null } = {}) {
+export function curbPaint(theme, { colorExpr = "#888", dimExpr = false, gateExpr = 1, bind = null } = {}) {
   const P = PALETTES[theme] || PALETTES.dark;
   const g = (v) => (gateExpr === 1 ? v : ["*", gateExpr, v]);
   const shown = ["interpolate", ["linear"], ["zoom"],
@@ -111,10 +109,6 @@ export function curbPaint(theme, { colorExpr = "#888", dimExpr = false, gateExpr
   const layers = {
     "zone-fill": { "fill-color": colorExpr, "fill-opacity": g(["case", dimExpr, P.fillOpacity * 0.4, P.fillOpacity]) },
     "zone-line": { "line-color": colorExpr, "line-opacity": shown, "line-width": width(1), "line-offset": offset },
-    "zone-better": {
-      "line-color": P.halo, "line-width": width(0.4), "line-offset": offset,
-      "line-opacity": ["step", ["zoom"], 0, 13, ["case", betterExpr, g(1), 0]],
-    },
   };
   for (const props of Object.values(layers)) for (const k of Object.keys(props)) props[k] = bound(props[k]);
   return layers;
@@ -122,9 +116,9 @@ export function curbPaint(theme, { colorExpr = "#888", dimExpr = false, gateExpr
 
 // `tiles` (optional): { url, minzoom, maxzoom, bounds } → curb layers read static vector tiles (source-layer "curbs")
 // instead of the runtime GeoJSON source. Layer ids are identical either way so the UI code doesn't care.
-export function buildStyle(theme, { colorExpr, dimExpr, gateExpr, betterExpr, bind, tiles, filter } = {}) {
+export function buildStyle(theme, { colorExpr, dimExpr, gateExpr, bind, tiles, filter } = {}) {
   const P = PALETTES[theme] || PALETTES.dark;
-  const paint = curbPaint(theme, { colorExpr: colorExpr || "#888", dimExpr, gateExpr, betterExpr, bind });
+  const paint = curbPaint(theme, { colorExpr: colorExpr || "#888", dimExpr, gateExpr, bind });
   const curb = tiles ? { source: "curbs", "source-layer": "curbs" } : { source: "zones" };
   const curbSource = tiles
     ? { curbs: { type: "vector", tiles: [tiles.url], minzoom: tiles.minzoom, maxzoom: tiles.maxzoom, bounds: tiles.bounds } }
@@ -172,7 +166,6 @@ export function buildStyle(theme, { colorExpr, dimExpr, gateExpr, betterExpr, bi
       // Curbs sit on the roads, under all labels.
       { id: "zone-fill", type: "fill", ...curb, minzoom: CURB_FADE_ZOOM, filter: withFilter(["==", ["geometry-type"], "Polygon"]), paint: paint["zone-fill"] },
       { id: "zone-line", type: "line", ...curb, minzoom: CURB_FADE_ZOOM, ...(filter ? { filter } : {}), layout: { "line-cap": "round", "line-join": "round" }, paint: paint["zone-line"] },
-      { id: "zone-better", type: "line", ...curb, minzoom: CURB_FADE_ZOOM, ...(filter ? { filter } : {}), layout: { "line-cap": "round", "line-join": "round" }, paint: { ...paint["zone-better"], "line-dasharray": [0.5, 2.5] } },
 
       { id: "meters", type: "circle", ...meter, minzoom: 15, layout: { visibility: "none" },
         paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 15, 2.5, 19, 6], "circle-color": "#1a73e8", "circle-stroke-color": P.halo, "circle-stroke-width": 1.5 } },
@@ -191,9 +184,9 @@ export function buildStyle(theme, { colorExpr, dimExpr, gateExpr, betterExpr, bi
 
       ...["Point", "LineString"].map((g) => omt(`water-label-${g === "Point" ? "point" : "line"}`, "symbol", "water_name", { minzoom: 12, filter: ["==", ["geometry-type"], g],
         layout: { "text-field": NAME, "text-font": FONT_ITALIC, "text-size": ["interpolate", ["linear"], ["zoom"], 12, 11, 16, 13], "text-letter-spacing": 0.05, "symbol-placement": g === "Point" ? "point" : "line" },
-        paint: { "text-color": P.waterLabel, "text-halo-color": P.water, "text-halo-width": 1 } })),
+        paint: { "text-color": P.label, "text-halo-color": P.halo, "text-halo-width": 1.2 } })),
 
-      omt("park-label", "symbol", "park", { minzoom: 14, filter: ["has", "name"], layout: { "text-field": NAME, "text-font": FONT, "text-size": 11, "text-max-width": 8, "text-padding": 6 }, paint: { "text-color": P.parkLabel, "text-halo-color": P.halo, "text-halo-width": 1.2 } }),
+      omt("park-label", "symbol", "park", { minzoom: 14, filter: ["has", "name"], layout: { "text-field": NAME, "text-font": FONT, "text-size": 11, "text-max-width": 8, "text-padding": 6 }, paint: { "text-color": P.label, "text-halo-color": P.halo, "text-halo-width": 1.2 } }),
       omt("poi-transit", "symbol", "poi", { minzoom: 13, filter: ["all", ["==", ["get", "class"], "railway"], ["in", ["get", "subclass"], ["literal", ["station", "subway", "halt", "tram_stop"]]]],
         layout: { "text-field": ["format", "■ ", { "text-color": P.transit }, NAME, {}], "text-font": FONT, "text-size": 11, "text-anchor": "left", "text-offset": [0.3, 0], "text-optional": true, "text-padding": 4 },
         paint: { "text-color": P.labelStrong, "text-halo-color": P.halo, "text-halo-width": 1.2 } }),
@@ -216,6 +209,6 @@ export function buildStyle(theme, { colorExpr, dimExpr, gateExpr, betterExpr, bi
   };
 }
 
-export const CURB_LAYERS = ["zone-fill", "zone-line", "zone-better"];
+export const CURB_LAYERS = ["zone-fill", "zone-line"];
 export const LABEL_LAYERS = ["road-label-major", "road-label-mid", "road-label-minor", "road-label-service"];
 export const METER_LAYERS = ["meters"];

@@ -13,6 +13,10 @@ describe("slimProps", () => {
     expect(slimProps(pt(1).properties)).toEqual({ OBJECTID: 1, METER_ID: "M1", STREET: "Boylston St", PAY_POLICY: "2HR" });
     expect(slimProps({ METER_ID: "", STREET: null, ZONE: "2001" })).toEqual({ ZONE: "2001" });
   });
+  it("keeps the schedule fields the build turns into curb rules", () => {
+    const p = { PARK_NO_PAY: "00:00AM-24:00AM SUN", TOW_AWAY: "04:00PM-06:00PM MON-FRI", DIR: "N", METER_STATE: "ACTIVE", NUMBEROFSPACES: 1, INSTALLED_ON: "1/1/2017" };
+    expect(slimProps(p)).toEqual({ PARK_NO_PAY: p.PARK_NO_PAY, TOW_AWAY: p.TOW_AWAY, DIR: "N", METER_STATE: "ACTIVE", NUMBEROFSPACES: 1 });
+  });
 });
 
 describe("fetchMetersHub", () => {

@@ -5,7 +5,8 @@
 // Checks:
 //   through-buildings  drawn inside a building where no road is drawn
 //   floating           off every drawn road surface (> 0.5 m past the edge)
-//   into-cross-street  a line end sitting inside a cross street's drawn surface
+//   into-cross-street  a line end sitting inside a cross street's drawn surface (crossing at > 60°)
+//   into-oblique       the same for a street meeting at a shallow angle (25–60°, e.g. Fencourt St at Huntington Ave)
 //   jog                consecutive curbs (one ends where the next starts) drawn > 0.8 m apart sideways
 //   sharp-turn         a bend tighter than 60° inside one drawn line
 //   stray              drawn > 10 m from the city's own geometry for that curb
@@ -29,7 +30,7 @@ const { roads, buildings } = await loadOsm(bb, { cacheDir: path.join(IN, "osm"),
 const { features } = snapZones(fc.features, roads, { buildings });
 const ridx = makeRoadIndex(roads, P), bidx = makeBuildingIndex(buildings, P);
 
-const found = { "through-buildings": [], floating: [], "into-cross-street": [], jog: [], "sharp-turn": [], stray: [] };
+const found = { "through-buildings": [], floating: [], "into-cross-street": [], "into-oblique": [], jog: [], "sharp-turn": [], stray: [] };
 const flag = (k, at, detail) => found[k].push({ at: P.inv(at).map((n) => +n.toFixed(5)), detail });
 const dist = (p, c) => { let b = Infinity; for (let k = 1; k < c.length; k++) { const [ax, ay] = c[k - 1], [bx, by] = c[k], dx = bx - ax, dy = by - ay, t = Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / (dx * dx + dy * dy || 1))); b = Math.min(b, Math.hypot(p[0] - ax - t * dx, p[1] - ay - t * dy)); } return b; };
 const ends = [];
@@ -60,9 +61,10 @@ features.forEach((f, i) => {
       const p = drawn[k], q = drawn[nb], L = Math.hypot(p[0] - q[0], p[1] - q[1]) || 1, fx = (p[0] - q[0]) / L, fy = (p[1] - q[1]) / L;
       ends.push({ p, u: k === 0 ? [-fx, -fy] : [fx, fy], start: k === 0, i, side });
       for (const sg of ridx.near(p)) {
-        if (Math.abs(fx * sg.ux + fy * sg.uy) > 0.5) continue;
+        const cos = Math.abs(fx * sg.ux + fy * sg.uy);
+        if (cos > 0.9) continue;
         const t = ((p[0] - sg.ax) * sg.dx + (p[1] - sg.ay) * sg.dy) / (sg.L * sg.L);
-        if (t > 0 && t < 1 && Math.hypot(p[0] - sg.ax - t * sg.dx, p[1] - sg.ay - t * sg.dy) < half(sg.cls)) { flag("into-cross-street", p, f.properties.curb_zone_id); break; }
+        if (t > 0 && t < 1 && Math.hypot(p[0] - sg.ax - t * sg.dx, p[1] - sg.ay - t * sg.dy) < half(sg.cls)) { flag(cos > 0.5 ? "into-oblique" : "into-cross-street", p, cos > 0.5 ? `${f.properties._rc || "unsnapped"}→${sg.cls} ${Math.round(Math.acos(cos) * 180 / Math.PI)}°` : f.properties.curb_zone_id); break; }
       }
     }
   }

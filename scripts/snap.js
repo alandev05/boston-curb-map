@@ -79,9 +79,16 @@ function cutEnd(r, d, atStart) {
 // that point, closer than its own half-width + `setback`, would put this line across the other street's curb,
 // so the end is trimmed back until it clears. Only cross streets running past the drawn point count (the foot of
 // the perpendicular must land on the segment), so a T-junction on the far side of the road doesn't trim this side.
-export function trimAtCrossings(r, side, rc, index, { setback = 1.5, maxTrim = 12, crossCos = 0.5 } = {}) {
+// A road meeting at a shallow angle (25–60°, e.g. Fencourt St into Huntington Ave) is a cross street too, once we
+// know which road the curb follows (`own`: its OSM way ids): that road, and its straight continuation (the next way of
+// the same street, joined at a node no other road touches), are never trimmed against. Shallow roads may cut at most
+// `maxTrim` more than the square crossings alone would: past that, the other road runs alongside (a ramp, a fork)
+// rather than across, and the end is left where the square crossings put it.
+export function trimAtCrossings(r, side, rc, index, { setback = 1.5, maxTrim = 12, crossCos = 0.5, obliqueCos = 0.9 } = {}, own = null) {
   const off = halfWidth(rc);
-  for (const atStart of [true, false]) {
+  const square = (cos) => cos <= crossCos;
+  const shallow = (cos, seg) => square(cos) || (cos <= obliqueCos && !own.has(seg.rid) && !index.continues(seg.rid, own));
+  const trimEnd = (r, atStart, isCross) => {
     for (let guard = 0; guard < 30 && r.length >= 2; guard++) {
       const [a, b] = atStart ? [r[1], r[0]] : [r[r.length - 2], r[r.length - 1]]; // b = the end, a→b points outward
       const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
@@ -91,7 +98,7 @@ export function trimAtCrossings(r, side, rc, index, { setback = 1.5, maxTrim = 1
       const px = b[0] + s * off * fy, py = b[1] - s * off * fx;
       let need = 0;
       for (const seg of index.near([px, py])) {
-        if (Math.abs(fx * seg.ux + fy * seg.uy) > crossCos) continue; // only roads crossing this one
+        if (!isCross(Math.abs(fx * seg.ux + fy * seg.uy), seg)) continue; // only roads crossing this one
         const t = ((px - seg.ax) * seg.dx + (py - seg.ay) * seg.dy) / (seg.L * seg.L);
         if (t < 0 || t > 1) continue;
         const d = Math.hypot(px - (seg.ax + t * seg.dx), py - (seg.ay + t * seg.dy));
@@ -101,18 +108,28 @@ export function trimAtCrossings(r, side, rc, index, { setback = 1.5, maxTrim = 1
       r = cutEnd(r, Math.min(need, 2), atStart);
       if (lengthOf(r) < 1) return [];
     }
+    return r;
+  };
+  for (const atStart of [true, false]) {
+    const sq = trimEnd(r, atStart, square);
+    if (!own || sq.length < 2) { r = sq; continue; }
+    const all = trimEnd(sq, atStart, shallow);
+    r = lengthOf(sq) - lengthOf(all) > maxTrim ? sq : all;
   }
-  return r;
+  return r.length >= 2 ? r : [];
 }
 
 const lengthOf = (pts) => pts.reduce((s, p, i) => (i ? s + Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) : 0), 0);
 
 // roads: [{ coords: [[lon,lat],...], cls }] — OSM transportation lines (OpenMapTiles classes).
 export function makeRoadIndex(roads, proj, cell = 40) {
-  const grid = new Map(), segs = [];
+  const grid = new Map(), segs = [], nodes = new Map(), ends = [];
   const key = (i, j) => i * 100003 + j;
+  const nodeKey = ([x, y]) => `${Math.round(x * 5)},${Math.round(y * 5)}`; // 0.2 m: shared OSM nodes decode to the same point
   roads.forEach((r, rid) => {
     const pts = r.coords.map(proj.fwd);
+    for (const p of pts) { const k = nodeKey(p); (nodes.get(k) || nodes.set(k, new Set()).get(k)).add(rid); }
+    ends[rid] = [nodeKey(pts[0]), nodeKey(pts[pts.length - 1])];
     for (let k = 1; k < pts.length; k++) {
       const [ax, ay] = pts[k - 1], [bx, by] = pts[k];
       const dx = bx - ax, dy = by - ay, L = Math.hypot(dx, dy);
@@ -126,6 +143,10 @@ export function makeRoadIndex(roads, proj, cell = 40) {
     }
   });
   return {
+    // Is way `rid` the straight continuation of one of the `own` ways: does it end at a node shared only with one of them?
+    continues(rid, own) {
+      return (ends[rid] || []).some((k) => { const at = nodes.get(k); return at.size === 2 && [...at].some((o) => o !== rid && own.has(o)); });
+    },
     near([x, y]) {
       const i0 = Math.floor(x / cell), j0 = Math.floor(y / cell), seen = new Set(), out = [];
       for (let i = i0 - 1; i <= i0 + 1; i++) for (let j = j0 - 1; j <= j0 + 1; j++)
@@ -199,7 +220,7 @@ export function snapLine(coords, index, proj, { maxDist = 14, minCos = 0.85, ste
     if (!best) { hits.push(null); prevRid = -1; continue; }
     // Road direction at the match, oriented along the curb's own direction of travel.
     const dir = Math.sign(hx * best.s.ux + hy * best.s.uy) || 1;
-    hits.push({ p: [best.qx, best.qy], ux: best.s.ux * dir, uy: best.s.uy * dir });
+    hits.push({ p: [best.qx, best.qy], ux: best.s.ux * dir, uy: best.s.uy * dir, rid: best.s.rid });
     prevRid = best.s.rid;
     cls[best.s.cls] = (cls[best.s.cls] || 0) + 1;
     vote += Math.sign((px - best.qx) * hy - (py - best.qy) * hx); // + = curb is right of travel direction
@@ -213,7 +234,7 @@ export function snapLine(coords, index, proj, { maxDist = 14, minCos = 0.85, ste
     const side = bias >= 0 ? "R" : "L";
     for (let k = i; k < j; k++) {
       const h = hits[k], m = h.merged[side], dir = Math.sign(h.hx * m.s.ux + h.hy * m.s.uy) || 1;
-      hits[k] = { p: [m.qx, m.qy], ux: m.s.ux * dir, uy: m.s.uy * dir };
+      hits[k] = { p: [m.qx, m.qy], ux: m.s.ux * dir, uy: m.s.uy * dir, rid: m.s.rid };
       cls[m.s.cls] = (cls[m.s.cls] || 0) + 1;
       vote += side === "R" ? 1 : -1;
     }
@@ -221,16 +242,16 @@ export function snapLine(coords, index, proj, { maxDist = 14, minCos = 0.85, ste
   }
   // Split into runs: unmatched points, a sharp change in road direction, or a jump between projections all break a run.
   const runs = [];
-  let run = [];
+  let run = [], rids = new Set();
   for (let i = 0; i < hits.length; i++) {
     const h = hits[i], prev = hits[i - 1];
     const breaks = !h || !prev || prev.ux * h.ux + prev.uy * h.uy < turnCos || Math.hypot(h.p[0] - prev.p[0], h.p[1] - prev.p[1]) > step * 1.5 + 1;
-    if (breaks && run.length) { runs.push(run); run = []; }
-    if (h) run.push(h.p);
+    if (breaks && run.length) { runs.push(Object.assign(run, { rids })); run = []; rids = new Set(); }
+    if (h) { run.push(h.p); rids.add(h.rid); }
   }
-  if (run.length) runs.push(run);
+  if (run.length) runs.push(Object.assign(run, { rids }));
   const snappedParts = runs
-    .map((r) => trimHooks(simplify(r, 0.3).filter((p, i, arr) => !i || p[0] !== arr[i - 1][0] || p[1] !== arr[i - 1][1])))
+    .map((r) => Object.assign(trimHooks(simplify(r, 0.3).filter((p, i, arr) => !i || p[0] !== arr[i - 1][0] || p[1] !== arr[i - 1][1])), { rids: r.rids }))
     .filter((r) => r.length >= 2 && lengthOf(r) >= Math.min(3, len * 0.5));
   const kept = snappedParts.reduce((s, r) => s + lengthOf(r), 0);
   if (betweenRoads > pts.length * 0.3) return { fail: "between" }; // a median/fork curb: keep its true geometry
@@ -243,7 +264,7 @@ export function snapLine(coords, index, proj, { maxDist = 14, minCos = 0.85, ste
   // Trimming at cross streets can swallow a curb that lies entirely inside an intersection (a corner radius);
   // drawn anywhere, it would sit on the other street, so it isn't drawn (`parts` comes back empty).
   // Fragments under 2.5 m left after trimming read as stray dots at corners; don't draw them.
-  const parts = snappedParts.map((r) => trimHooks(dedupe(trimAtCrossings(r, side, rc, index, trimOpts)))).filter((r) => r.length >= 2 && lengthOf(r) >= Math.min(2.5, len * 0.8));
+  const parts = snappedParts.map((r) => trimHooks(dedupe(trimAtCrossings(r, side, rc, index, trimOpts, r.rids)))).filter((r) => r.length >= 2 && lengthOf(r) >= Math.min(2.5, len * 0.8));
   return { parts, side, rc };
 }
 // Share of a curb (drawn at `side`) lying inside the surface of another parallel road of the same class.

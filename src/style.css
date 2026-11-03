@@ -45,33 +45,15 @@ select { font: inherit; font-size: 14px; border: 1px solid var(--line); border-r
 #panel header { margin-bottom: 14px; }
 /* Time: one chip ("Now · Sat 4:12 PM"), the rest disclosed on demand. */
 .when-chip { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; font: inherit; font-size: 15px; font-weight: 500; color: var(--text); background: transparent; border: none; padding: 0; cursor: pointer; text-align: left; }
-.when-chip i { font-style: normal; font-size: 12px; color: var(--muted); transition: transform .2s; }
-.when-chip[aria-expanded="true"] i { transform: rotate(180deg); }
+.chev { width: 18px; height: 18px; flex: none; fill: none; stroke: var(--muted); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; transition: transform .2s; }
+.when-chip[aria-expanded="true"] .chev, .day-btn[aria-expanded="true"] .chev { transform: rotate(180deg); }
 .date-note { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
 .date-note:empty { display: none; }
 .when-panel { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); display: grid; gap: 12px; }
 .when-panel[hidden] { display: none; }
-.field > span { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted); margin-bottom: 6px; }
-.field .row select { flex: 1 1 0; min-width: 0; }
-.stay-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.stay-chips button { font: inherit; font-size: 12.5px; font-weight: 500; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
-.stay-chips button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
-.stay-custom { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 13px; color: var(--muted); }
-.stay-custom[hidden] { display: none; }
-.stay-custom input { width: 72px; font: inherit; font-size: 14px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); }
 .link { justify-self: start; font: inherit; font-size: 13px; color: var(--text); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
 .link[hidden] { display: none; }
-.stay-key { margin: 10px 0 0; font-size: 11.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.stay-key[hidden] { display: none; }
-.stay-key span { display: inline-block; width: 18px; height: 4px; border-radius: 2px; background: var(--muted); }
-.stay-key .k-fade { opacity: .3; }
-.stay-key .k-dots { margin-left: 8px; background: repeating-linear-gradient(90deg, var(--muted) 0 6px, var(--bg) 6px 8px, var(--muted) 8px 14px); }
 .chip.on { background: var(--panel-2); border-color: var(--text); }
-.timeline { list-style: none; margin: 0 0 10px; padding: 0; font-size: 12.5px; }
-.timeline li { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
-.timeline li i { width: 14px; height: 4px; border-radius: 2px; background: var(--c); flex: none; }
-.timeline li span { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 128px; }
-.rules li b .free { color: var(--text); font-weight: 600; }
 
 .legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { display: inline-flex; align-items: center; gap: 7px; font: inherit; font-size: 12px; font-weight: 500; padding: 5px 10px 5px 7px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--text); cursor: pointer; transition: background .15s, opacity .15s; }
@@ -102,14 +84,22 @@ footer a { color: var(--text); }
 .verdict small { font-size: 12px; color: var(--muted); }
 .popup h3 { margin: 0; font-size: 15px; font-weight: 500; }
 .popup .meta { font-size: 12px; color: var(--muted); margin: 2px 0 10px; }
-.rules { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow: auto; font-size: 12.5px; }
-.rules li { position: relative; padding: 6px 36px 6px 10px; border-left: 2px solid var(--line); margin-bottom: 6px; }
-.rules li b { font-weight: 500; }
-.rules li span { color: var(--muted); }
-.rules li.on { border-left-color: var(--text); background: var(--panel-2); border-radius: 0 6px 6px 0; }
-.rules li.dim { opacity: .5; }
-.rules li.overridden { border-left-style: dashed; font-size: 11.5px; }
-.rules li em { position: absolute; right: 8px; top: 6px; font-style: normal; font-size: 10px; border: 1px solid var(--line); border-radius: 5px; padding: 0 4px; color: var(--muted); }
+
+/* Popup: the selected day as an agenda (time · rule, current stretch marked), other-day rules as tags */
+.agenda { list-style: none; margin: 4px 0 0; padding: 0; font-size: 13px; max-height: 260px; overflow: auto; }
+.agenda li { position: relative; display: grid; grid-template-columns: 112px 1fr auto; gap: 8px; align-items: baseline; padding: 6px 8px 6px 12px; border-radius: 6px; }
+.agenda li::before { content: ""; position: absolute; left: 0; top: 7px; bottom: 7px; width: 3px; border-radius: 2px; background: var(--c); }
+.agenda li span { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 12.5px; }
+.agenda li b { font-weight: 500; }
+.agenda li .free { color: var(--text); font-weight: 600; }
+.agenda li.none b { color: var(--muted); font-weight: 400; }
+.agenda li.none::before { opacity: .4; }
+.agenda li.on { background: var(--panel-2); }
+.agenda li em { font-style: normal; font-size: 10px; border: 1px solid var(--line); border-radius: 5px; padding: 0 4px; color: var(--muted); }
+.tags { list-style: none; margin: 10px 0 0; padding: 10px 0 0; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 6px; }
+.tags li { font-size: 11.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 8px; padding: 3px 9px; }
+.tags li b { color: var(--text); font-weight: 500; margin-right: 3px; }
+.popup .empty { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
 
 /* ---------- maplibre chrome ---------- */
 .maplibregl-ctrl-group { background: var(--panel) !important; border: 1px solid var(--line) !important; border-radius: 10px !important; box-shadow: 0 8px 24px rgba(0,0,0,.3) !important; backdrop-filter: blur(10px); }
@@ -154,7 +144,7 @@ footer a { color: var(--text); }
   .chip-row .chip.off i { opacity: .35; }
   .chip-row .chip.on { box-shadow: var(--pill-shadow), inset 0 0 0 2px var(--c); }
   .chip-row .when-chip { width: auto; flex: none; gap: 6px; box-shadow: var(--pill-shadow), inset 0 0 0 2px var(--accent); }
-  .chip-row .when-chip i { display: none; }
+  .chip-row .when-chip .chev { display: none; }
   .chip-row .when-chip::before { content: ""; width: 16px; height: 16px; flex: none; background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7v5l3 2'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7v5l3 2'/%3E%3C/svg%3E") center / contain no-repeat; }
 
   #panel {
@@ -167,24 +157,32 @@ footer a { color: var(--text); }
   .sheet-handle { display: block; position: sticky; top: 0; z-index: 1; width: calc(100% + 28px); height: 24px; margin: 0 -14px 2px; border: none; background: transparent; cursor: grab; touch-action: none; }
   .sheet-handle::before { content: ""; display: block; width: 38px; height: 5px; margin: 0 auto; border-radius: 3px; background: var(--muted); opacity: .5; }
   #panel h1 { font-size: 26px; }
-  /* In the sheet the time controls are always open (their chip lives up top), and the legend card keeps only the key. */
+  /* In the sheet the time controls are always open (their chip lives up top), and the legend is in the chip row. */
   #panel .when-panel[hidden] { display: grid; }
   #panel .when-panel { margin-top: 0; padding-top: 0; border-top: none; }
-  #panel .rules-card h2 { display: none; }
-  #panel .rules-card:not(:has(.stay-key:not([hidden]))) { display: none; }
-  #panel .rules-card .stay-key { margin: 0; }
+  #panel .rules-card { display: none; }
 
   .popup { left: 0 !important; right: 0; top: auto !important; bottom: 0; width: auto; max-width: none; max-height: 62%; overflow: auto; border-radius: 18px 18px 0 0; border-bottom: none; padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
-  .popup .rules { max-height: none; }
 
   /* Map controls ride above whichever sheet is showing. */
   .maplibregl-ctrl-bottom-right, .maplibregl-ctrl-bottom-left { bottom: var(--sheet-h, 0px); transition: bottom .3s cubic-bezier(.2,.8,.2,1); }
 }
 
-/* Time slider (Now → end of tomorrow) */
-.field > span output { text-transform: none; letter-spacing: 0; color: var(--text); font-size: 13px; margin-left: 4px; }
-.slider { margin: 2px 0 10px; }
+/* Time: day picker + clock on one row, time-of-day slider under it */
+.time-head { display: flex; align-items: center; gap: 10px; }
+.daypick { position: relative; flex: none; }
+.day-btn { display: inline-flex; align-items: center; gap: 8px; font: inherit; font-size: 14px; font-weight: 500; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px 6px 12px; cursor: pointer; }
+.day-btn:hover { border-color: var(--muted); }
+.day-btn .chev { width: 16px; height: 16px; }
+.day-list { position: absolute; z-index: 10; top: calc(100% + 6px); left: 0; min-width: 100%; width: max-content; list-style: none; margin: 0; padding: 6px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); box-shadow: 0 12px 32px rgba(0, 0, 0, .35); outline: none; }
+.day-list[hidden] { display: none; }
+.day-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 8px 10px; border-radius: 6px; font-size: 14px; cursor: pointer; }
+.day-list li small { font-size: 12px; color: var(--muted); }
+.day-list li:hover, .day-list li.active { background: var(--panel-2); }
+.day-list li[aria-selected="true"] { font-weight: 600; }
+.day-list li[aria-selected="true"]::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); align-self: center; margin-left: auto; }
+.day-list li:has(small)[aria-selected="true"]::after { margin-left: 0; }
+.time-head output { font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.time-head .link { margin-left: auto; }
 .slider input { width: 100%; margin: 0; accent-color: var(--accent); height: 28px; cursor: pointer; }
-.slider-scale { position: relative; display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); height: 14px; }
-.slider-scale #midMark { position: absolute; transform: translateX(-50%); }
-.slider-scale #midMark::before { content: ""; position: absolute; left: 50%; top: -9px; width: 1px; height: 6px; background: var(--muted); }
+.slider-scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }

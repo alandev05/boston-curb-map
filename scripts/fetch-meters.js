@@ -24,7 +24,7 @@ async function getJSON(url) {
 }
 
 // Keep the attributes the popup/analysis actually use; ArcGIS layers often carry 30+ fields.
-const KEEP = /^(objectid|meter_id|meter|id|street|st_name|street_name|address|side|zone|zone_id|parkboston|pay_policy|rate|hours|hrs|time_limit|limit|type|status|vendor|blk|block|dist|district|beat|lat|lon|long|latitude|longitude)/i;
+const KEEP = /^(objectid|meter_id|meter|id|street|st_name|street_name|address|side|dir|zone|zone_id|parkboston|pay_policy|park_no_pay|tow_away|pre_pay|street_cleaning|base_rate|numberofspaces|space_state|rate|hours|hrs|time_limit|limit|type|status|vendor|blk|block|dist|district|beat|lat|lon|long|latitude|longitude)/i;
 export function slimProps(p) {
   const out = {};
   for (const [k, v] of Object.entries(p || {})) if (KEEP.test(k) && v !== null && v !== "") out[k] = v;

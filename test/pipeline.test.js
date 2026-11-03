@@ -118,15 +118,15 @@ describe("buildTiles()", () => {
     expect(Number.isInteger(f.id)).toBe(true);
     expect(f.properties.dom).toHaveLength(1);
   });
-  it("writes the zoomed-out grid: per square, its curbs' rule sets and lengths, at each size", async () => {
+  it("writes the zoomed-out grid: per square, its curbs' rule sets and lengths", async () => {
     const cells = JSON.parse(await readFile(path.join(out, "data", "cells.json"), "utf8"));
     expect(cells.sizes).toEqual(CELL_SIZES);
     expect(cells.levels).toHaveLength(CELL_SIZES.length);
     expect(manifest.cells).toEqual(cells.levels.map((l) => l.length));
     const sum = (level) => level.reduce((n, c) => n + c.slice(2).filter((_, k) => k % 2).reduce((a, m) => a + m, 0), 0);
-    // every curb with rules is in exactly one square per level, so both levels hold the same total length
-    expect(sum(cells.levels[0])).toBe(sum(cells.levels[1]));
-    expect(cells.levels[1].length).toBeLessThan(cells.levels[0].length); // coarser squares, fewer of them
+    // every curb with rules is in exactly one square: the squares hold all of their length (each capped at 500 m)
+    const want = ruled().filter((f) => /LineString/.test(f.geometry.type)).reduce((n, f) => n + Math.min(f.properties.len, 500), 0);
+    expect(Math.abs(sum(cells.levels[0]) - want)).toBeLessThanOrEqual(cells.levels[0].reduce((n, c) => n + (c.length - 2) / 2, 0)); // per-entry rounding
   });
   const idsAt = async (zoom) => {
     const ids = new Set(), z = String(zoom);

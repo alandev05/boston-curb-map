@@ -1,9 +1,9 @@
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./style.css";
-import { CATEGORIES, verdict, fmtRate, fmtSpan, dayKey, isRealPolicy, isMetered, isStreetCleaning, ruleOf, collapsePolicies, overriddenBy, catColor, shade, cityHoliday, stayWindow, evaluateStay } from "./rules.js";
+import { CATEGORIES, verdict, fmtRate, fmtSpan, dayKey, isRealPolicy, isMetered, isStreetCleaning, ruleOf, collapsePolicies, overriddenBy, catColor, shade, cityHoliday, stayWindow, evaluateStay, allowedFor } from "./rules.js";
 import { DEMO_ZONES, DEMO_POLICIES } from "./demo.js";
-import { buildStyle, curbPaint, LABEL_LAYERS, METER_LAYERS, CURB_LAYERS, DETAIL_ZOOM, NO_DATA_ZOOM, OVERVIEW_ROADS, OVERVIEW_MIN_LEN } from "./basemap.js";
+import { buildStyle, curbPaint, LABEL_LAYERS, METER_LAYERS, CURB_LAYERS, CELL_LAYERS, CURB_FADE_ZOOM, CURB_ZOOM, NO_DATA_ZOOM } from "./basemap.js";
 import { CODES, CATEGORY_OF, SLOT_MIN } from "./schedule.js";
 
 const $ = (s) => document.querySelector(s);
@@ -13,6 +13,7 @@ const store = { get: (k) => { try { return localStorage.getItem(k); } catch { re
 // ---------- state ----------
 let policies = {};                 // curb_policy_id -> policy
 let rulesets = [];                 // tiles: rs -> "id,id,…" (every distinct set of rule ids a curb carries)
+let cells = null;                  // tiles: the zoomed-out grid (public/data/cells.json)
 const selected = new Set();        // legend: empty = show every rule; otherwise only these categories
 // Time: by default the map follows the clock ("live"). Picking a start in the time panel pins it; a stay length
 // (minutes, 0 = just this moment) switches the map to grading each curb for the whole stay.
@@ -54,12 +55,15 @@ const CATS = Object.keys(CODES), FITS = ["o", "b", "x"];
 let grades = { key: "", cat: [], fit: [] };
 // Includes the data mode and rule-set count, so grades made before the data arrived are never reused.
 const stayKey = () => `${mode}|${rulesets.length}|${Math.floor(startTime().getTime() / 60000)}|${stayMin}|${+profile.permit}|${+profile.placard}`;
-const lookup = (table, values) => ["at", ["at", ["get", "rs"], ["literal", table]], ["literal", values]];
+// (rs and the tables come from the same build — every URL is versioned — but an out-of-range index would make
+// MapLibre fall back to black, so it's guarded.)
+const lookup = (table, values, fallback) => ["case", ["<", ["coalesce", ["get", "rs"], table.length], table.length],
+  ["at", ["at", ["get", "rs"], ["literal", table]], ["literal", values]], fallback];
 // Not graded yet (or api mode): the weekly-dominant category baked into the tile.
 const domCat = ["match", ["coalesce", ["get", "dom"], "u"], ...Object.entries(CODES).flatMap(([k, c]) => [c, k]), "unknown"];
-const catKey = () => (mode !== "tiles" ? ["coalesce", ["get", "cat"], "unknown"] : grades.cat.length ? lookup(grades.cat, CATS) : domCat);
+const catKey = () => (mode !== "tiles" ? ["coalesce", ["get", "cat"], "unknown"] : grades.cat.length ? lookup(grades.cat, CATS, "unknown") : domCat);
 const FIT_CODE = { ok: "o", better: "b", breaks: "x", no: "x" };
-const fitKey = () => (mode !== "tiles" ? ["coalesce", ["get", "fit"], "o"] : grades.fit.length ? lookup(grades.fit, FITS) : "o");
+const fitKey = () => (mode !== "tiles" ? ["coalesce", ["get", "fit"], "o"] : grades.fit.length ? lookup(grades.fit, FITS, "o") : "o");
 // The expressions below refer to ["var","cat"] / ["var","fit"]; curbPaint binds them once per paint property.
 const CAT = ["var", "cat"], FIT = ["var", "fit"];
 const highlightExpr = ["any", ["boolean", ["feature-state", "hover"], false], ["boolean", ["feature-state", "selected"], false]];
@@ -89,21 +93,29 @@ async function detectMode() {
     if (!r.ok) throw 0;
     manifest = await r.json();
     if (!manifest.tiles) throw 0;
-    const [pr, rr] = await Promise.all([fetch("/data/policies.json"), fetch("/data/rulesets.json")]);
+    // Versioned like the tiles, so a browser can't pair this build's tiles with another build's rules.
+    const v = manifest.version ? `?v=${manifest.version}` : "";
+    const [pr, rr, cr] = await Promise.all(["policies", "rulesets", "cells"].map((f) => fetch(`/data/${f}.json${v}`)));
     policies = pr.ok ? await pr.json() : {};
     rulesets = rr.ok ? await rr.json() : [];
+    cells = cr.ok ? await cr.json() : null;
     mode = "tiles";
     gradeAll();
   } catch { mode = "api"; }
 }
 
 await detectMode();
+// [w, s, e, n] grown by a margin (degrees), as MapLibre's [[w, s], [e, n]].
+function padBounds([w, s, e, n], dx = 0.06, dy = 0.04) { return [[w - dx, s - dy], [e + dx, n + dy]]; }
 
 const map = new maplibregl.Map({
   container: "map",
   center: [-71.0589, 42.3601],
   zoom: 12.2,
-  minZoom: 9,
+  // Boston only: the view can't leave the curb data's area (plus a margin), which also caps how far out you can
+  // zoom — about the whole city on a laptop screen. minZoom is a floor for very small screens.
+  maxBounds: padBounds(mode === "tiles" && manifest?.bbox ? manifest.bbox : CITY_BBOX),
+  minZoom: 10,
   maxZoom: 20,
   maxPitch: 0,          // 2D only
   pitchWithRotate: false,
@@ -126,6 +138,7 @@ function applyLayerToggles() {
 // After any setStyle (theme switch) the GeoJSON sources come back empty and feature-state is gone: refill both.
 map.on("style.load", () => {
   applyLayerToggles();
+  cellsKey = ""; // the new style's grid source starts empty
   repaint();
   if (metersData) map.getSource("meters")?.setData(metersData);
 });
@@ -141,16 +154,23 @@ map.on("load", () => {
   }
   let hoverId = null;
   // Curb lines are only a few px wide, so hit-test with a tolerance box like Google does, skipping curbs the
-  // current zoom or legend hides (no-data below NO_DATA_ZOOM, side streets below DETAIL_ZOOM).
+  // current zoom or legend hides (anything below CURB_ZOOM, no-data below NO_DATA_ZOOM).
   map.on("mousemove", (e) => {
     const f = pickCurb(e.point);
-    map.getCanvas().style.cursor = f ? "pointer" : "";
+    map.getCanvas().style.cursor = f || pickCell(e.point) ? "pointer" : "";
     const id = f ? f.id : null;
     if (hoverId !== null && hoverId !== id) map.setFeatureState({ ...curbSource(), id: hoverId }, { hover: false });
     hoverId = id;
     if (id !== null) map.setFeatureState({ ...curbSource(), id }, { hover: true });
   });
-  map.on("click", (e) => { const f = pickCurb(e.point); f ? showPopup(f, e.lngLat) : hidePopup(); });
+  map.on("click", (e) => {
+    const f = pickCurb(e.point);
+    if (f) return showPopup(f, e.lngLat);
+    hidePopup();
+    // Zoomed out, a square stands for many curbs: clicking it zooms in to them.
+    const c = pickCell(e.point);
+    if (c) map.flyTo({ center: e.lngLat, zoom: Math.max(map.getZoom() + 2, CURB_ZOOM + 1) });
+  });
 });
 
 const curbSource = () => (mode === "tiles" ? { source: "curbs", sourceLayer: "curbs" } : { source: "zones" });
@@ -164,12 +184,16 @@ function drawnCat(f) {
 const HIT_PX = 7;
 function shownAtZoom(f) {
   const z = map.getZoom(), cat = drawnCat(f);
-  if (cat === "unknown" && z < NO_DATA_ZOOM) return false;
-  if (z < DETAIL_ZOOM && !(OVERVIEW_ROADS.includes(f.properties.rc) && (f.properties.len ?? 999) >= OVERVIEW_MIN_LEN)) return false;
+  if (z < CURB_ZOOM || (cat === "unknown" && z < NO_DATA_ZOOM)) return false; // zoomed out, the grid stands in
   if (selected.size && !selected.has(cat)) return false;
   return true;
 }
+function pickCell(pt) {
+  const layers = CELL_LAYERS.filter((l) => map.getLayer(l));
+  return map.getZoom() < CURB_ZOOM && layers.length ? map.queryRenderedFeatures([pt.x, pt.y], { layers })[0] || null : null;
+}
 function pickCurb(pt) {
+  if (map.getZoom() < CURB_ZOOM) return null;
   const layers = ["zone-line", "zone-fill"].filter((l) => map.getLayer(l));
   // Grow the box until something visible is under it, so the nearest curb wins over a neighbor.
   for (const r of [0, 2, 4, HIT_PX]) {
@@ -288,6 +312,49 @@ function repaint() {
   } else gradeAll();
   const paint = curbPaint(theme, paintOpts());
   for (const id of CURB_LAYERS) for (const [k, v] of Object.entries(paint[id])) map.setPaintProperty(id, k, v);
+  updateCells();
+}
+
+// The zoomed-out grid answers "where can I park?". Each square takes the color of the most common way you can
+// park there right now (free, meter, or permit/placard if you have one — by curb length), and is stronger the more
+// of its curb you can park on. Where you can't park at all it shows its most common restriction, faintly. With
+// rules picked in the legend, it shows the most common of those instead. Recomputed only when the grades, legend,
+// "I have" toggles or theme change: one pass over ~25k (rule set, length) pairs, a few ms.
+let cellsKey = "";
+function updateCells() {
+  const src = map.getSource("cells");
+  if (!src || !cells || mode !== "tiles" || !grades.cat.length) return;
+  const key = `${grades.key}|${[...selected].sort()}|${theme}`;
+  if (key === cellsKey) return;
+  cellsKey = key;
+  const features = [], unknown = CATS.indexOf("unknown"), [kx, ky] = cells.k;
+  cells.levels.forEach((level, li) => {
+    const size = cells.sizes[li];
+    for (const c of level) {
+      const byCat = new Map(); let total = 0;
+      for (let k = 2; k < c.length; k += 2) {
+        const ci = grades.cat[c[k]];
+        if (ci === undefined || ci === unknown) continue;
+        total += c[k + 1];
+        if (selected.size && !selected.has(CATS[ci])) continue;
+        byCat.set(ci, (byCat.get(ci) || 0) + c[k + 1]);
+      }
+      if (!total) continue;
+      let best = -1, bestLen = 0, parkable = 0, a;
+      const pick = (ok) => { best = -1; bestLen = 0; for (const [ci, len] of byCat) if (ok(CATS[ci]) && len > bestLen) { best = ci; bestLen = len; } };
+      if (selected.size) { pick(() => true); a = 0.3 + 0.55 * (bestLen / total); }
+      else {
+        for (const [ci, len] of byCat) if (allowedFor(CATS[ci], profile)) parkable += len;
+        if (parkable) { pick((c) => allowedFor(c, profile)); a = 0.3 + 0.6 * (parkable / total); }
+        else { pick(() => true); a = 0.14; }
+      }
+      if (best < 0) continue;
+      const w = (c[0] * size) / kx, e = ((c[0] + 1) * size) / kx, so = (c[1] * size) / ky, n = ((c[1] + 1) * size) / ky;
+      features.push({ type: "Feature", properties: { level: li, color: catColor(CATS[best], theme), a: +a.toFixed(2) },
+        geometry: { type: "Polygon", coordinates: [[[w, so], [e, so], [e, n], [w, n], [w, so]]] } });
+    }
+  });
+  src.setData({ type: "FeatureCollection", features });
 }
 
 async function loadMeters() {

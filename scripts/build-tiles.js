@@ -3,12 +3,15 @@
 //   public/tiles/{z}/{x}/{y}.pbf   z9–15 (overzoomed to 20 by the client)
 //   public/data/policies.json       compact policy map for popups
 //   public/data/rulesets.json       every distinct set of rule ids, indexed by a feature's `rs`
+//   public/data/cells.json          the zoomed-out grid: per square, its curbs' rule sets and lengths
 //   public/data/manifest.json       counts, timestamps, bbox, zoom range
 // Each feature carries `rs`, the index of its set of rule ids: the map grades each rule set once for the chosen
 // time and stay and colors tiles by looking `rs` up in the result, so nothing per curb is computed while zooming.
 // `dom` (the most common category over the week) is a fallback for a feature the browser hasn't graded.
-// Overview tiles (below DETAIL_ZOOM, i.e. the whole-region view) carry only the curbs drawn there (long ones on
-// major roads); from DETAIL_ZOOM every curb is in the tiles.
+// Level of detail: zoomed out, individual curbs are too small to read or click, so the map draws a grid instead
+// (public/data/cells.json: each square lists its curbs' rule sets and lengths; the browser colors it by the
+// dominant rule for the chosen time). Curb tiles start at MIN_ZOOM, where the grid hands over to curbs.
+// Every data URL carries the build's version, so a browser never mixes tiles from one build with rules from another.
 // Curbs are snapped onto the basemap's OSM centerlines first (scripts/snap.js): `side` (+1/-1, 0 = unsnapped)
 // and `rc` (road class) let the map offset each one to its edge of the drawn road; `len` (m) drives
 // zoom-based disclosure (short hydrant/corner stubs only appear at street zooms).
@@ -19,17 +22,17 @@ import { fileURLToPath } from "node:url";
 import geojsonvt from "geojson-vt";
 import vtpbf from "vt-pbf";
 import { encodeSchedule, dominant } from "../src/schedule.js";
-import { snapZones, lineLength } from "./snap.js";
-import { OVERVIEW_ROADS, OVERVIEW_MIN_LEN, DETAIL_ZOOM, NO_DATA_ZOOM } from "../src/basemap.js";
+import { snapZones, lineLength, projector } from "./snap.js";
+import { CURB_FADE_ZOOM, NO_DATA_ZOOM, CELL_SIZES } from "../src/basemap.js";
 import { isRealPolicy } from "../src/rules.js";
-export { DETAIL_ZOOM, NO_DATA_ZOOM };
+export { NO_DATA_ZOOM };
 import { loadOsm } from "./osm-roads.js";
 import { parseCsv, assignSweeping } from "./sweeping.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IN = process.env.DATA_DIR || path.join(root, "data", "raw");
 const OUT = process.env.PUBLIC_DIR || path.join(root, "public");
-export const MIN_ZOOM = 9, MAX_ZOOM = 15; // every curb from DETAIL_ZOOM (basemap.js) up
+export const MIN_ZOOM = Math.floor(CURB_FADE_ZOOM), MAX_ZOOM = 15; // curbs fade in from CURB_FADE_ZOOM (basemap.js)
 export const METERS_ZOOM = 13; // meter points appear from here
 
 const lon2x = (lon, z) => Math.floor(((lon + 180) / 360) * 2 ** z);
@@ -57,6 +60,27 @@ export function prepare(features, policies, rulesets = []) {
   return out;
 }
 
+// The zoomed-out grid. For each square size (meters), every square with curbs that have rules: its grid position
+// and its curbs summed by rule set — [i, j, rs, meters, rs, meters, …]. Square (i, j) spans lon i·size/kx to
+// (i+1)·size/kx and lat j·size/ky to (j+1)·size/ky (`k` = [kx, ky], meters per degree). A curb counts in the square
+// holding its midpoint. The browser grades the rule sets for the chosen time and colors each square.
+export function buildCells(features, sizes = CELL_SIZES) {
+  const lat0 = features.find((f) => f.geometry)?.geometry.coordinates.flat(3)[1] ?? 42.35, P = projector(lat0);
+  const [kx, ky] = P.fwd([1, 1]);
+  const levels = sizes.map((size) => {
+    const cells = new Map();
+    for (const f of features) {
+      const line = f.geometry.type === "MultiLineString" ? f.geometry.coordinates.flat() : f.geometry.type === "LineString" ? f.geometry.coordinates : null;
+      if (!line?.length) continue;
+      const [x, y] = P.fwd(line[Math.floor(line.length / 2)]), i = Math.floor(x / size), j = Math.floor(y / size), k = `${i},${j}`;
+      let c = cells.get(k); if (!c) cells.set(k, (c = { i, j, byRs: new Map() }));
+      c.byRs.set(f.properties.rs, (c.byRs.get(f.properties.rs) || 0) + Math.min(f.properties.len, 500));
+    }
+    return [...cells.values()].map(({ i, j, byRs }) => [i, j, ...[...byRs].flatMap(([rs, m]) => [rs, Math.round(m)])]);
+  });
+  return { sizes, k: [+kx.toFixed(3), +ky.toFixed(3)], levels };
+}
+
 function bboxOf(features) {
   let a = 180, b = 90, c = -180, d = -90;
   const walk = (x) => (typeof x[0] === "number" ? ((a = Math.min(a, x[0])), (b = Math.min(b, x[1])), (c = Math.max(c, x[0])), (d = Math.max(d, x[1]))) : x.forEach(walk));
@@ -72,24 +96,19 @@ export async function buildTiles(features, policies, { out = OUT, log = console.
   const sweep = sweeping?.length && names?.length ? assignSweeping(snap.features, policies, sweeping, { names, numbers }, { log }) : null;
   const rulesets = [], prepared = prepare(snap.features, policies, rulesets);
   const bbox = bboxOf(prepared);
-  // Three indexes, each carrying only the curbs drawn at its zooms: full (NO_DATA_ZOOM up: every curb), ruled
-  // (DETAIL_ZOOM up: curbs with at least one readable rule; the rest can only ever be "no data", hidden until
-  // NO_DATA_ZOOM) and slim (the region view: ruled curbs on major roads).
+  // Two indexes, each carrying only the curbs drawn at its zooms: full (NO_DATA_ZOOM up: every curb) and ruled
+  // (below that: curbs with at least one readable rule; the rest can only ever be "no data", hidden until NO_DATA_ZOOM).
   const ruledSet = new Set(rulesets.map((r, i) => (r.split(",").some((id) => isRealPolicy(policies[id])) ? i : -1)));
   const ruled = prepared.filter((f) => ruledSet.has(f.properties.rs));
-  const slim = ruled.filter((f) => OVERVIEW_ROADS.includes(f.properties.rc) && f.properties.len >= OVERVIEW_MIN_LEN);
   const opts = { maxZoom: MAX_ZOOM, indexMaxZoom: MAX_ZOOM, indexMaxPoints: 0, tolerance: 3, extent: 4096, buffer: 64, lineMetrics: false };
   const full = geojsonvt({ type: "FeatureCollection", features: prepared }, opts);
   const mid = geojsonvt({ type: "FeatureCollection", features: ruled }, opts);
-  // tolerance 0: geojson-vt would otherwise cull curbs shorter than the tolerance at city scale, and
-  // the whole point of the overview is that every curb shows as a dash. Each is ~2 points, so it stays cheap.
-  const thin = geojsonvt({ type: "FeatureCollection", features: slim }, { ...opts, tolerance: 0 });
   const meterIdx = meters.length ? geojsonvt({ type: "FeatureCollection", features: meters }, { ...opts, tolerance: 0 }) : null;
 
   await rm(path.join(out, "tiles"), { recursive: true, force: true });
   let count = 0, bytes = 0;
   for (let z = MIN_ZOOM; z <= MAX_ZOOM; z++) {
-    const index = z >= NO_DATA_ZOOM ? full : z >= DETAIL_ZOOM ? mid : thin;
+    const index = z >= NO_DATA_ZOOM ? full : mid;
     const x0 = lon2x(bbox[0], z), x1 = lon2x(bbox[2], z), y0 = lat2y(bbox[3], z), y1 = lat2y(bbox[1], z);
     for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
       const t = index.getTile(z, x, y);
@@ -112,7 +131,10 @@ export async function buildTiles(features, policies, { out = OUT, log = console.
   await mkdir(path.join(out, "data"), { recursive: true });
   await writeFile(path.join(out, "data", "policies.json"), JSON.stringify(slimPolicies));
   await writeFile(path.join(out, "data", "rulesets.json"), JSON.stringify(rulesets));
-  const manifest = { ...meta, snapped: snap.snapped, sweeping: sweep ? { rows: sweep.rows, matched: sweep.rowsMatched, curbs: sweep.curbsSwept } : null, built_at: new Date().toISOString(), zones: prepared.length, rulesets: rulesets.length, policies: Object.keys(policies).length, meters: meters.length, meters_zoom: METERS_ZOOM, tiles: count, tile_bytes: bytes, bbox, minzoom: MIN_ZOOM, maxzoom: MAX_ZOOM, detail_zoom: DETAIL_ZOOM, tile_url: "/tiles/{z}/{x}/{y}.pbf" };
+  const cells = buildCells(ruled);
+  await writeFile(path.join(out, "data", "cells.json"), JSON.stringify(cells));
+  const built = new Date(), version = built.getTime().toString(36);
+  const manifest = { ...meta, snapped: snap.snapped, sweeping: sweep ? { rows: sweep.rows, matched: sweep.rowsMatched, curbs: sweep.curbsSwept } : null, built_at: built.toISOString(), version, zones: prepared.length, rulesets: rulesets.length, cells: cells.levels.map((l) => l.length), policies: Object.keys(policies).length, meters: meters.length, meters_zoom: METERS_ZOOM, tiles: count, tile_bytes: bytes, bbox, minzoom: MIN_ZOOM, maxzoom: MAX_ZOOM, tile_url: `/tiles/{z}/{x}/{y}.pbf?v=${version}` };
   await writeFile(path.join(out, "data", "manifest.json"), JSON.stringify(manifest, null, 1));
   return manifest;
 }

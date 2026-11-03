@@ -7,7 +7,8 @@ import { VectorTile } from "@mapbox/vector-tile";
 import Pbf from "pbf";
 import { encodeSchedule, dominant, slotIndex, codeAt, CODES, CATEGORY_OF, DAYS, SLOTS } from "../src/schedule.js";
 import { verdict, isRealPolicy } from "../src/rules.js";
-import { prepare, buildTiles, MIN_ZOOM, MAX_ZOOM, DETAIL_ZOOM, NO_DATA_ZOOM, METERS_ZOOM } from "../scripts/build-tiles.js";
+import { prepare, buildTiles, buildCells, MIN_ZOOM, MAX_ZOOM, NO_DATA_ZOOM, METERS_ZOOM } from "../scripts/build-tiles.js";
+import { CELL_SIZES } from "../src/basemap.js";
 import { POLICIES, ZONES, METERS } from "../scripts/mock-cds.js";
 
 const toFeature = (z) => { const { geometry, ...properties } = z; return { type: "Feature", geometry, properties }; };
@@ -87,12 +88,15 @@ describe("buildTiles()", () => {
       }
       return n;
     };
-    expect(await count(METERS_ZOOM - 1)).toBe(0);
+    for (let z = MIN_ZOOM; z < METERS_ZOOM; z++) expect(await count(z)).toBe(0);
     expect(await count(MAX_ZOOM)).toBeGreaterThanOrEqual(200);
   });
 
   it("writes a manifest with counts, bbox and zoom range", () => {
-    expect(manifest).toMatchObject({ zones: 600, source: "test", minzoom: MIN_ZOOM, maxzoom: MAX_ZOOM, detail_zoom: DETAIL_ZOOM, tile_url: "/tiles/{z}/{x}/{y}.pbf" });
+    expect(manifest).toMatchObject({ zones: 600, source: "test", minzoom: MIN_ZOOM, maxzoom: MAX_ZOOM });
+    // every data URL carries the build version, so a browser never mixes tiles and rules from different builds
+    expect(manifest.version).toMatch(/^[0-9a-z]+$/);
+    expect(manifest.tile_url).toBe(`/tiles/{z}/{x}/{y}.pbf?v=${manifest.version}`);
     expect(manifest.tiles).toBeGreaterThan(10);
     expect(manifest.bbox[0]).toBeLessThan(manifest.bbox[2]);
   });
@@ -114,18 +118,15 @@ describe("buildTiles()", () => {
     expect(Number.isInteger(f.id)).toBe(true);
     expect(f.properties.dom).toHaveLength(1);
   });
-  it("overview tiles carry only the curbs drawn there (long, with rules, on major roads), with rs + dom + disclosure keys", async () => {
-    const z = String(MIN_ZOOM);
-    const ids = new Set(); let bytes = 0;
-    for (const x of await readdir(path.join(out, "tiles", z))) for (const y of await readdir(path.join(out, "tiles", z, x))) {
-      const buf = await readFile(path.join(out, "tiles", z, x, y)); bytes += buf.length;
-      const layer = new VectorTile(new Pbf(gunzipSync(buf))).layers.curbs;
-      expect(Object.keys(layer.feature(0).properties).sort()).toEqual(["dom", "len", "rc", "rs", "side"]);
-      for (let i = 0; i < layer.length; i++) { const f = layer.feature(i), p = f.properties; expect(p.rc).toBe("primary"); expect(p.len).toBeGreaterThanOrEqual(25); ids.add(f.id); }
-    }
-    const expected = ruled().filter((f) => f.properties.rc === "primary" && f.properties.len >= 25).length;
-    expect(ids.size).toBe(expected); // none culled by simplification
-    expect(bytes).toBeLessThan(20000);
+  it("writes the zoomed-out grid: per square, its curbs' rule sets and lengths, at each size", async () => {
+    const cells = JSON.parse(await readFile(path.join(out, "data", "cells.json"), "utf8"));
+    expect(cells.sizes).toEqual(CELL_SIZES);
+    expect(cells.levels).toHaveLength(CELL_SIZES.length);
+    expect(manifest.cells).toEqual(cells.levels.map((l) => l.length));
+    const sum = (level) => level.reduce((n, c) => n + c.slice(2).filter((_, k) => k % 2).reduce((a, m) => a + m, 0), 0);
+    // every curb with rules is in exactly one square per level, so both levels hold the same total length
+    expect(sum(cells.levels[0])).toBe(sum(cells.levels[1]));
+    expect(cells.levels[1].length).toBeLessThan(cells.levels[0].length); // coarser squares, fewer of them
   });
   const idsAt = async (zoom) => {
     const ids = new Set(), z = String(zoom);
@@ -140,10 +141,10 @@ describe("buildTiles()", () => {
     expect((await idsAt(NO_DATA_ZOOM)).size).toBe(600);
     expect((await idsAt(MAX_ZOOM)).size).toBe(600);
   });
-  it("from DETAIL_ZOOM to NO_DATA_ZOOM they carry every curb with a readable rule, and only those", async () => {
+  it("from MIN_ZOOM to NO_DATA_ZOOM they carry every curb with a readable rule, and only those", async () => {
     const want = new Set(ruled().map((f) => f.id));
     expect(want.size).toBeGreaterThan(0);
-    for (const z of [DETAIL_ZOOM, NO_DATA_ZOOM - 1]) expect([...(await idsAt(z))].sort()).toEqual([...want].sort());
+    for (let z = MIN_ZOOM; z < NO_DATA_ZOOM; z++) expect([...(await idsAt(z))].sort()).toEqual([...want].sort());
   });
   it("writes the rule sets the tiles index into", async () => {
     const rs = JSON.parse(await readFile(path.join(out, "data", "rulesets.json"), "utf8"));
@@ -155,5 +156,17 @@ describe("buildTiles()", () => {
     expect(Object.keys(pol).sort()).toEqual(Object.keys(POLICIES).sort());
     expect(pol["pol-meter-2h"].rules[0].rate[0].rate).toBe(375);
     expect(pol["pol-meter-2h"].time_spans).toHaveLength(1);
+  });
+});
+
+describe("buildCells()", () => {
+  const curb = (lon, lat, rs, len) => ({ type: "Feature", geometry: { type: "LineString", coordinates: [[lon, lat], [lon + 0.0001, lat]] }, properties: { rs, len } });
+  it("sums curbs by rule set within a square, and keeps squares apart", () => {
+    const { sizes, k, levels } = buildCells([curb(-71.08, 42.35, 3, 40), curb(-71.08001, 42.35001, 3, 10), curb(-71.08002, 42.35, 5, 20), curb(-71.0, 42.35, 3, 30)], [120]);
+    expect(sizes).toEqual([120]);
+    expect(k[0]).toBeLessThan(k[1]); // a degree of longitude is shorter than one of latitude here
+    const [a, b] = levels[0];
+    expect(Object.fromEntries(a.slice(2).reduce((p, v, i) => (i % 2 ? p[p.length - 1].push(v) : p.push([v]), p), []))).toEqual({ 3: 50, 5: 20 });
+    expect(b.slice(2)).toEqual([3, 30]);
   });
 });

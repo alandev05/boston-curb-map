@@ -5,7 +5,8 @@ const tileHeaders = () => ({
   name: "pbf-tile-headers",
   configureServer(server) {
     server.middlewares.use((req, res, next) => {
-      if (req.url?.startsWith("/tiles/") && req.url.endsWith(".pbf")) {
+      const url = req.url?.split("?")[0]; // tile URLs carry ?v=<build>
+      if (url?.startsWith("/tiles/") && url.endsWith(".pbf")) {
         res.setHeader("Content-Type", "application/x-protobuf");
         res.setHeader("Content-Encoding", "gzip");
       }

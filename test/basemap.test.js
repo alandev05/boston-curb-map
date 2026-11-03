@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { validateStyleMin } from "@maplibre/maplibre-gl-style-spec";
-import { buildStyle, PALETTES, OFM_TILES, LABEL_LAYERS, METER_LAYERS, ROADS, roadWidthPx, curbOffsetPx } from "../src/basemap.js";
+import { buildStyle, PALETTES, OFM_TILES, LABEL_LAYERS, METER_LAYERS, ROADS, roadWidthPx, curbOffsetPx, CURB_FADE_ZOOM } from "../src/basemap.js";
 
 const color = ["match", ["get", "cat"], "paid", "#3ea8ff", "#888"];
 
@@ -34,7 +34,7 @@ describe.each(["dark", "light"])("buildStyle(%s)", (theme) => {
   });
   it("curb lines are flat: colored by the category expression, no glow/blur layers", () => {
     expect(layer("zone-line").paint["line-color"]).toEqual(color);
-    expect(layer("zone-line").minzoom).toBeUndefined();
+    expect(layer("zone-line").minzoom).toBe(CURB_FADE_ZOOM); // zoomed out, the grid stands in for curbs
     expect(layer("zone-line").paint["line-blur"]).toBeUndefined();
     expect(ids.some((id) => /glow|core/.test(id))).toBe(false);
   });

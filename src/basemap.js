@@ -88,21 +88,21 @@ const roadRank = ["match", ["get", "class"], ...CLASSES.flatMap((c) => [c, ROADS
 // gateExpr: a 0–1 multiplier per curb from the UI — 0 for categories filtered out in the legend, and a fade for curbs
 // that won't last a chosen stay. betterExpr: true for curbs that get better during the stay; they carry a dotted
 // stripe (zone-better) down the middle of the line.
-// Below DETAIL_ZOOM (the whole-region view) only curbs on major roads, at least this long, are drawn, and the
-// overview tiles carry nothing else. From DETAIL_ZOOM every curb with rules shows; "no data" curbs join, dimmed, at 14.
-export const DETAIL_ZOOM = 11, NO_DATA_ZOOM = 14;
-export const OVERVIEW_ROADS = ["motorway", "trunk", "primary", "secondary"], OVERVIEW_MIN_LEN = 25;
+// Level of detail. Zoomed out, a single curb is too small to read or click, so the map shows a grid of squares
+// colored by each square's dominant rule (CELL_SIZES meters: the coarse grid below CELL_SPLIT_ZOOM, the fine one
+// above). From CURB_FADE_ZOOM the curbs fade in over the grid; by CURB_ZOOM the grid is gone and curbs are
+// clickable. "No data" curbs (never anything else) join, dimmed, at NO_DATA_ZOOM.
+export const CELL_SIZES = [120, 480], CELL_SPLIT_ZOOM = 12, CURB_FADE_ZOOM = 13, CURB_ZOOM = 13.4, NO_DATA_ZOOM = 14;
 // `bind` (optional): ["name", expr, …] — variables the other expressions use as ["var", name] (the curb's category
 // looked up once per property instead of once per use in the JSON). Each paint value that refers to one is
 // wrapped in a single "let".
 export function curbPaint(theme, { colorExpr = "#888", dimExpr = false, gateExpr = 1, betterExpr = false, bind = null } = {}) {
   const P = PALETTES[theme] || PALETTES.dark;
-  const len = ["coalesce", ["get", "len"], 999];
-  const major = ["in", ["coalesce", ["get", "rc"], ""], ["literal", OVERVIEW_ROADS]];
   const g = (v) => (gateExpr === 1 ? v : ["*", gateExpr, v]);
-  const shown = ["step", ["zoom"],
-    g(["case", ["all", major, [">=", len, OVERVIEW_MIN_LEN], ["!", dimExpr]], 1, 0]),
-    DETAIL_ZOOM, g(["case", dimExpr, 0, 1]),
+  const shown = ["interpolate", ["linear"], ["zoom"],
+    CURB_FADE_ZOOM, 0,
+    CURB_ZOOM, g(["case", dimExpr, 0, 1]),
+    NO_DATA_ZOOM - 0.01, g(["case", dimExpr, 0, 1]),
     NO_DATA_ZOOM, g(["case", dimExpr, P.dimOpacity, 1])];
   const side = ["coalesce", ["get", "side"], 0];
   const width = (k) => ["interpolate", ["exponential", 2], ["zoom"], ...CURB_W.flatMap(([z, w]) => [z, ["case", dimExpr, Math.max(0.6, +(w * 0.6 * k).toFixed(2)), +(w * k).toFixed(2)]])];
@@ -147,6 +147,8 @@ export function buildStyle(theme, { colorExpr, dimExpr, gateExpr, betterExpr, bi
       omt: { type: "vector", url: OFM_TILES, attribution: "© OpenStreetMap contributors, © OpenFreeMap" },
       ...curbSource,
       meters: { type: "geojson", data: { type: "FeatureCollection", features: [] } },
+      // The zoomed-out grid; main.js fills it (squares with `color`, `a` = opacity, `level` = index into CELL_SIZES).
+      cells: { type: "geojson", data: { type: "FeatureCollection", features: [] }, buffer: 0, tolerance: 0 },
     },
     layers: [
       { id: "bg", type: "background", paint: { "background-color": P.bg } },
@@ -171,9 +173,14 @@ export function buildStyle(theme, { colorExpr, dimExpr, gateExpr, betterExpr, bi
         paint: { "line-color": P.rail, "line-width": ["interpolate", ["linear"], ["zoom"], 12, 0.6, 16, 1.5], "line-dasharray": [4, 3] } }),
 
       // Curbs sit on the roads, under all labels.
-      { id: "zone-fill", type: "fill", ...curb, filter: withFilter(["==", ["geometry-type"], "Polygon"]), paint: paint["zone-fill"] },
-      { id: "zone-line", type: "line", ...curb, ...(filter ? { filter } : {}), layout: { "line-cap": "round", "line-join": "round" }, paint: paint["zone-line"] },
-      { id: "zone-better", type: "line", ...curb, ...(filter ? { filter } : {}), layout: { "line-cap": "round", "line-join": "round" }, paint: { ...paint["zone-better"], "line-dasharray": [0.5, 2.5] } },
+      // Zoomed out: the grid (coarse squares below CELL_SPLIT_ZOOM, fine ones above), fading out as curbs fade in.
+      { id: "cells-coarse", type: "fill", source: "cells", maxzoom: CELL_SPLIT_ZOOM, filter: ["==", ["get", "level"], 1],
+        paint: { "fill-color": ["get", "color"], "fill-opacity": ["get", "a"], "fill-antialias": false } },
+      { id: "cells-fine", type: "fill", source: "cells", minzoom: CELL_SPLIT_ZOOM, maxzoom: CURB_ZOOM, filter: ["==", ["get", "level"], 0],
+        paint: { "fill-color": ["get", "color"], "fill-opacity": ["interpolate", ["linear"], ["zoom"], CURB_FADE_ZOOM, ["get", "a"], CURB_ZOOM, 0], "fill-antialias": false } },
+      { id: "zone-fill", type: "fill", ...curb, minzoom: CURB_FADE_ZOOM, filter: withFilter(["==", ["geometry-type"], "Polygon"]), paint: paint["zone-fill"] },
+      { id: "zone-line", type: "line", ...curb, minzoom: CURB_FADE_ZOOM, ...(filter ? { filter } : {}), layout: { "line-cap": "round", "line-join": "round" }, paint: paint["zone-line"] },
+      { id: "zone-better", type: "line", ...curb, minzoom: CURB_FADE_ZOOM, ...(filter ? { filter } : {}), layout: { "line-cap": "round", "line-join": "round" }, paint: { ...paint["zone-better"], "line-dasharray": [0.5, 2.5] } },
 
       { id: "meters", type: "circle", ...meter, minzoom: 15, layout: { visibility: "none" },
         paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 15, 2.5, 19, 6], "circle-color": "#1a73e8", "circle-stroke-color": P.halo, "circle-stroke-width": 1.5 } },
@@ -218,5 +225,6 @@ export function buildStyle(theme, { colorExpr, dimExpr, gateExpr, betterExpr, bi
 }
 
 export const CURB_LAYERS = ["zone-fill", "zone-line", "zone-better"];
+export const CELL_LAYERS = ["cells-coarse", "cells-fine"];
 export const LABEL_LAYERS = ["road-label-major", "road-label-mid", "road-label-minor", "road-label-service"];
 export const METER_LAYERS = ["meters"];

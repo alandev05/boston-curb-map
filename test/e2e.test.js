@@ -159,14 +159,14 @@ describe.skipIf(!hasDist || !hasTiles)("static tiles mode over HTTP", () => {
   it("serves the manifest and policies bundle", async () => {
     const m = await (await fetch(`${base}/data/manifest.json`)).json();
     expect(m.tiles).toBeGreaterThan(100);
-    expect(m.tile_url).toBe("/tiles/{z}/{x}/{y}.pbf");
+    expect(m.tile_url).toBe(`/tiles/{z}/{x}/{y}.pbf?v=${m.version}`);
     const pol = await (await fetch(`${base}/data/policies.json`)).json();
     expect(Object.keys(pol).length).toBeGreaterThan(5);
   });
   it("serves tiles gzip-encoded with a protobuf content type, decodable as MVT", async () => {
     const m = await (await fetch(`${base}/data/manifest.json`)).json();
-    // centre tile of the bbox at detail zoom
-    const z = m.detail_zoom, lon = (m.bbox[0] + m.bbox[2]) / 2, lat = (m.bbox[1] + m.bbox[3]) / 2;
+    // centre tile of the bbox at the most detailed zoom
+    const z = m.maxzoom, lon = (m.bbox[0] + m.bbox[2]) / 2, lat = (m.bbox[1] + m.bbox[3]) / 2;
     const x = Math.floor(((lon + 180) / 360) * 2 ** z);
     const y = Math.floor(((1 - Math.log(Math.tan((lat * Math.PI) / 180) + 1 / Math.cos((lat * Math.PI) / 180)) / Math.PI) / 2) * 2 ** z);
     const r = await fetch(`${base}/tiles/${z}/${x}/${y}.pbf`);
@@ -187,7 +187,8 @@ describe.skipIf(!hasDist || !hasTiles)("static tiles mode over HTTP", () => {
     const js = html.match(/src="(\/assets\/[^"]+\.js)"/)[1];
     const bundle = await (await fetch(base + js)).text();
     expect(bundle).toMatch(/\/data\/manifest\.json/);
-    expect(bundle).toMatch(/\/data\/rulesets\.json/);
+    expect(bundle).toMatch(/rulesets/);
+    expect(bundle).toMatch(/cells/);
     expect(bundle).toMatch(/"at",\s*\["at",\s*\["get",\s*"rs"\]/); // O(1) array lookup per curb, not a string slice
   });
 });

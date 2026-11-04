@@ -17,7 +17,9 @@
     "data:offline": "node scripts/data.js --offline",
     "data:mock": "CDS_BASE=http://localhost:4321 RPS=200 node scripts/data.js",
     "build:site": "vite build",
-    "audit": "node scripts/audit-curbs.js"
+    "audit": "node scripts/audit-curbs.js",
+    "test:ui": "playwright test",
+    "ui:serve": "node scripts/ui-fixture.js && UI_PUBLIC=.ui/public vite build --outDir .ui/dist --emptyOutDir && DIST=.ui/dist node scripts/dev-server.js --port 4173"
   },
   "dependencies": {
     "geojson-vt": "^4.0.3",
@@ -26,8 +28,10 @@
   },
   "devDependencies": {
     "@mapbox/vector-tile": "^2.0.5",
+    "@playwright/test": "^1.64.1",
     "pbf": "^4.0.2",
     "vite": "^5.4.11",
     "vitest": "^2.1.9"
-  }
+  },
+  "license": "MIT"
 }

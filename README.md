@@ -26,11 +26,12 @@
 
 - **City of Boston [Curb Lab](https://www.boston.gov/curb-lab):** every curb segment and its posted rules, from the city's public [Curb Data Specification](https://github.com/openmobilityfoundation/curb-data-specification) feed.
 - **[Parking meters](https://data.boston.gov/dataset/parking-meters)** (Analyze Boston): each meter's paid hours, time limit, and tow-away hours.
-- **[Street sweeping schedules](https://data.boston.gov)** (Analyze Boston): which side of which block is swept, and when.
+- **[Street sweeping schedules](https://data.boston.gov/dataset/street-sweeping-schedules)** (Analyze Boston): which side of which block is swept, and when.
+- **[Street addresses (SAM)](https://data.boston.gov/dataset/live-street-address-management-sam-addresses)** (Analyze Boston): every address point, used to tell which side of a street has odd house numbers, since sweeping is posted by side.
 - **[OpenStreetMap](https://www.openstreetmap.org) / [OpenFreeMap](https://openfreemap.org):** the basemap, street names and house numbers.
 - **People using the map:** corrections, once a moderator accepts them.
 
-The data is refreshed every time the site is deployed.
+The data is refreshed every time the site is deployed, and every night.
 
 ## How it works
 
@@ -54,7 +55,7 @@ Corrections need a backend. Copy your Supabase details into `.env.local` (see be
 node scripts/dev-server.js --port 3000   # serves /api; Vite forwards /api to it
 ```
 
-`npm test` builds the site and runs the test suite (rule engine, data pipeline, curb snapping, corrections API, end-to-end against a mock city API). `npm run audit` reports curbs that would be drawn badly (through buildings, off the road, into cross streets).
+`npm test` builds the site and runs the test suite (rule engine, data pipeline, curb snapping, meters, sweeping, corrections API, end-to-end against a mock city API). `npm run test:ui` runs the site in a real browser (desktop and phone) against mock city data: tapping curbs, fixing one by dragging the handles, moderation, the time controls. GitHub Actions runs both on every push and pull request. `npm run audit` reports curbs that would be drawn badly (through buildings, off the road, into cross streets).
 
 ## Deploy
 
@@ -65,10 +66,11 @@ The site deploys to Vercel. The build (`npm run build`) fetches fresh data, so e
 | `SUPABASE_URL` | config | corrections |
 | `SUPABASE_SECRET_KEY` | secret | corrections (server only, never sent to the browser) |
 | `ADMIN_TOKEN` | secret | moderating corrections (the panel at `/review`) |
-| `DEPLOY_HOOK_URL` | secret, optional | a Vercel deploy hook, so accepting a correction rebuilds the map right away |
+| `DEPLOY_HOOK_URL` | secret, optional | a Vercel deploy hook: the nightly refresh, and accepting a correction, rebuild the map with it |
+| `CRON_SECRET` | secret, optional | lets only Vercel Cron run the nightly job (`/api/cron`: keeps Supabase awake, starts the rebuild) |
 | `IP_SALT` | secret, optional | salting the network fingerprint used for rate limits |
 
-Without the Supabase variables the map works normally; only corrections are unavailable. For a nightly data refresh, point any scheduler at a Vercel deploy hook.
+Without the Supabase variables the map works normally; only corrections are unavailable. The nightly job (09:00 UTC, set in `vercel.json`) needs `DEPLOY_HOOK_URL` and `CRON_SECRET`.
 
 ## Project layout
 
@@ -83,3 +85,7 @@ test/                  tests
 ## Contributing
 
 Issues and pull requests are welcome. If a curb is wrong, the quickest fix is **Fix this curb** on the map. For code changes, `npm test` should pass.
+
+## License
+
+Code: [MIT](LICENSE). Data: City of Boston open data and © OpenStreetMap contributors, under their own terms.

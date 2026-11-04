@@ -18,6 +18,8 @@ const tileHeaders = () => ({
 
 export default defineConfig({
   plugins: [tileHeaders()],
+  publicDir: process.env.UI_PUBLIC || "public", // the browser tests build against mock data (.ui/public)
+  test: { include: ["test/**/*.test.js"] }, // Vitest; the browser tests in tests-ui/ run under Playwright
   build: { target: "es2022", chunkSizeWarningLimit: 1200 },
   server: {
     // Local dev: `vercel dev` or scripts/dev-server.js serves /api on :3000.

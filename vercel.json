@@ -44,5 +44,11 @@
       "source": "/review",
       "destination": "/index.html"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron",
+      "schedule": "0 9 * * *"
+    }
   ]
 }

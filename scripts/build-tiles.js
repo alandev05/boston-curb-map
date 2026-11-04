@@ -72,8 +72,13 @@ function bboxOf(features) {
   return [a, b, c, d];
 }
 
-export async function buildTiles(features, policies, { out = OUT, log = console.error, meta = {}, meters = [], roads = null, buildings = null, names = null, numbers = null, sweeping = null, community = [] } = {}) {
+export async function buildTiles(features, policies, { out = OUT, log = console.error, meta = {}, meters = [], roads = null, buildings = null, names = null, numbers = null, addresses = null, sweeping = null, community = [] } = {}) {
   policies = { ...policies };
+  // Placeholders the city's survey left where it couldn't read a sign ("Unusable Image", on ~38k curbs) aren't rules:
+  // dropped here, so they're neither shipped nor splitting otherwise identical curbs into different rule sets.
+  const junk = new Set(Object.keys(policies).filter((id) => !isRealPolicy(policies[id])));
+  for (const id of junk) delete policies[id];
+  if (junk.size) features = features.map((f) => (f.properties?.curb_policy_ids?.some((id) => junk.has(id)) ? { ...f, properties: { ...f.properties, curb_policy_ids: f.properties.curb_policy_ids.filter((id) => !junk.has(id)) } } : f));
   // Each curb's length as the city drew it: the editor measures stretches along it (scripts/community.js).
   const rawLen = (g) => (g?.type === "LineString" ? lineLength(g.coordinates) : g?.type === "MultiLineString" ? g.coordinates.reduce((n, c) => n + lineLength(c), 0) : null);
   features = features.map((f) => (rawLen(f.geometry) != null ? { ...f, properties: { ...f.properties, _rawLen: +rawLen(f.geometry).toFixed(1) } } : f));
@@ -85,7 +90,7 @@ export async function buildTiles(features, policies, { out = OUT, log = console.
   const snap = snapZones(features, roads, { buildings });
   if (roads) log(`  snapped ${snap.snapped} of ${features.length} curbs onto road centerlines (${snap.stats.relaxed} on a second, looser pass, ${snap.stats.followed} by following a snapped neighbor); left in place: ${JSON.stringify(snap.stats.unsnapped)} (${snap.stats.clamped} pulled onto the nearest road edge); hidden inside intersections: ${snap.stats.hiddenInIntersection}; hidden (would cross a building, no road): ${snap.stats.hiddenThroughBuildings}`);
   // Street sweeping (city table, no geometry) joins onto the curbs as drawn; adds `sweep-*` policies.
-  const sweep = sweeping?.length && names?.length ? assignSweeping(snap.features, policies, sweeping, { names, numbers }, { log }) : null;
+  const sweep = sweeping?.length && names?.length ? assignSweeping(snap.features, policies, sweeping, { names, numbers, addresses }, { log }) : null;
   // Community pieces carry what the sign says, street cleaning included: no table-joined sweeping on top.
   for (const f of snap.features) if (f.properties?._community) f.properties.curb_policy_ids = f.properties.curb_policy_ids.filter((id) => !String(id).startsWith("sweep-"));
   const rulesets = [], curbs = [], prepared = prepare(snap.features, policies, rulesets, curbs);
@@ -143,9 +148,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const meta = JSON.parse(await readFile(path.join(IN, "meta.json"), "utf8").catch(() => "{}"));
   const meters = JSON.parse(await readFile(path.join(IN, "meters.geojson"), "utf8").catch(() => '{"features":[]}')).features;
   const community = JSON.parse(await readFile(path.join(IN, "submissions.json"), "utf8").catch(() => "[]"));
+  const addresses = JSON.parse(await readFile(path.join(IN, "addresses.json"), "utf8").catch(() => "[]"));
   const offline = process.argv.includes("--offline") || process.env.DATA_OFFLINE === "1";
   const osm = process.env.NO_SNAP ? null : await loadOsm(bboxOf(fc.features.filter((f) => f.geometry)), { cacheDir: path.join(IN, "osm"), offline });
   const sweeping = parseCsv(await readFile(path.join(IN, "sweeping.csv"), "utf8").catch(() => ""));
-  const m = await buildTiles(fc.features, policies, { meta, meters, roads: osm?.roads, buildings: osm?.buildings, names: osm?.names, numbers: osm?.numbers, sweeping, community });
+  const m = await buildTiles(fc.features, policies, { meta, meters, roads: osm?.roads, buildings: osm?.buildings, names: osm?.names, numbers: osm?.numbers, sweeping, community, addresses });
   console.log(`built ${m.tiles} tiles (${(m.tile_bytes / 1024).toFixed(0)} KB gz) for ${m.zones} zones + ${m.meters} meters in ${((Date.now() - t) / 1000).toFixed(1)}s → ${OUT}`);
 }

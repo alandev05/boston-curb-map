@@ -53,6 +53,33 @@ describe("assignSweeping", () => {
     expect(feats[2].properties.curb_policy_ids).not.toContain("sweep-1");  // past Pine St
     expect(verdict(feats[0].properties, policies, "tue", 9 * 60, { date: new Date("2026-11-03T09:00:00") }).category).toBe("street_cleaning");
   });
+  it("reads sides from the City's address list, counting only addresses on the curb's own street", () => {
+    // No OSM numbers; City addresses on Elm St say north is odd. A corner building's even number on Oak St sits on the
+    // north side too, and must not count.
+    const city = { names: osm.names, numbers: [], addresses: [[...at(30, 15), 11, "Elm St"], [...at(50, 15), 13, "Elm St"], [...at(40, 15), 20, "Oak St"], [...at(40, 16), 22, "Oak St"], [...at(30, -15), 12, "Elm St"]] };
+    const feats = [curb("north-in", 20, 60, -1), curb("south-in", 20, 60, 1)];
+    assignSweeping(feats, {}, [row], city);
+    expect(feats[0].properties.curb_policy_ids).toContain("sweep-1");
+    expect(feats[1].properties.curb_policy_ids).not.toContain("sweep-1");
+  });
+  it("'Dead End to Dead End' is the whole street, and the same cross street at both ends is a loop off it", () => {
+    const whole = { ...row, main_id: "2", side: "", from: "Dead End", to: "Dead End", miles: String(300 / 1609.34) };
+    let feats = [curb("west", -90, -40, -1), curb("east", 120, 180, 1)];
+    assignSweeping(feats, {}, [whole], osm);
+    expect(feats.every((f) => f.properties.curb_policy_ids.includes("sweep-2"))).toBe(true);
+    // Elm St only meets Oak St once; "Oak St to Oak St" runs from that junction to the street's end.
+    const loop = { ...row, main_id: "3", side: "", from: "Oak St", to: "Oak St", miles: String(200 / 1609.34) };
+    feats = [curb("east-of-oak", 120, 180, 1), curb("west-of-oak", -90, -40, 1)];
+    assignSweeping(feats, {}, [loop], osm);
+    expect(feats[0].properties.curb_policy_ids).toContain("sweep-3");
+    expect(feats[1].properties.curb_policy_ids).not.toContain("sweep-3");
+  });
+  it("finds a cross street whose line stops just short of the street", () => {
+    const short = { names: [osm.names[0], { name: "Oak Street", coords: [at(0, 25), at(0, 100)] }, osm.names[2]], numbers: osm.numbers };
+    const feats = [curb("north-in", 20, 60, -1)];
+    assignSweeping(feats, {}, [row], short);
+    expect(feats[0].properties.curb_policy_ids).toContain("sweep-1");
+  });
   it("leaves curbs alone whose curb-feed rules already include street cleaning", () => {
     const policies = { cds: { curb_policy_id: "cds", priority: 3, rules: [{ activity: "no parking" }], time_spans: [{ days_of_week: ["wed"], weeks_of_month: [2, 4], months: [4, 5, 6, 7, 8, 9, 10, 11] }] } };
     const feats = [curb("north-in", 20, 60, -1, ["cds"])];

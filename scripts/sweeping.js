@@ -4,8 +4,11 @@
 //   street     each drawn curb takes the name of the OSM street it runs along
 //   stretch    the row's two cross streets are located where their OSM lines meet the street; when names repeat
 //              (Washington St crosses half the city) the pair whose distance best fits the row's `miles` wins.
-//              "Dead End" is the street's end at about that distance.
-//   side       a curb's odd/even side comes from OSM house numbers on its side of the street
+//              "Dead End" is the street's end at about that distance; "Dead End" at both ends is the whole street;
+//              the same cross street at both ends with one junction is a loop off it. A cross street whose line stops
+//              just short of this one (a T across a wide road) gets a second, looser look.
+//   side       a curb's odd/even side comes from house numbers on its side of the street: the City's address list
+//              (only addresses on this street) and OSM's, spread to neighbors and the facing curb where unknown
 // Curbs whose own curb-feed rules already include street cleaning are left alone (the feed is newer and per-curb).
 // Each row becomes a policy: no parking for street cleaning on the listed days/weeks/hours, April–November
 // unless the row is marked year-round.
@@ -93,7 +96,7 @@ function segMeet(s, t) {
 }
 
 export function assignSweeping(features, policies, rows, osm, { log = () => {} } = {}) {
-  const stats = { rows: rows.length, rowsMatched: 0, curbsSwept: 0, skipped: { noStreet: 0, noCrossStreets: 0, noCurbs: 0 }, curbParity: { odd: 0, even: 0, unknown: 0 }, keptCurbFeedCleaning: 0, overridden: 0 };
+  const stats = { rows: rows.length, rowsMatched: 0, curbsSwept: 0, skipped: { noStreet: 0, noCrossStreets: 0, noCurbs: 0 }, noCurbsWhy: { nothingInStretch: 0, otherSide: 0, alreadyInFeed: 0 }, curbParity: { odd: 0, even: 0, unknown: 0 }, keptCurbFeedCleaning: 0, overridden: 0 };
   // Named street segments, by name and spatially.
   const byName = new Map(), named = segIndex(40);
   for (const { name, coords } of osm.names || []) {
@@ -105,8 +108,16 @@ export function assignSweeping(features, policies, rows, osm, { log = () => {} }
       (byName.get(n) || byName.set(n, []).get(n)).push(s); named.add(s);
     }
   }
+  // SWEEP_HOLDOUT=1: hide a fifth of the sides known from house numbers and report how many the spreading below gets
+  // right (a check on the guesses, not used for the map).
+  let seed = 7;
+  const holdout = process.env.SWEEP_HOLDOUT ? { n: 0, right: 0, wrong: 0, pick: () => ((seed = (seed * 16807) % 2147483647) / 2147483647) < 0.2 } : null;
   const nums = new Map(), NC = 40;
-  for (const { num, coord } of osm.numbers || []) { const p = P.fwd(coord), k = `${Math.floor(p[0] / NC)},${Math.floor(p[1] / NC)}`; (nums.get(k) || nums.set(k, []).get(k)).push({ num, p }); }
+  // House numbers: OpenStreetMap's (no street name), and the City's address list (each with its street, so a corner
+  // building's number on the cross street isn't counted for this one).
+  const addNum = (num, coord, street) => { const p = P.fwd(coord), k = `${Math.floor(p[0] / NC)},${Math.floor(p[1] / NC)}`; (nums.get(k) || nums.set(k, []).get(k)).push({ num, p, street }); };
+  for (const { num, coord } of osm.numbers || []) addNum(num, coord, null);
+  for (const [lng, lat, num, street] of osm.addresses || []) addNum(num, [lng, lat], normName(street));
 
   // Each drawn curb: the street it's on, a point on that street's centerline, which way its side faces, its parity.
   const curbsByName = new Map();
@@ -132,10 +143,12 @@ export function assignSweeping(features, policies, rows, osm, { log = () => {} }
     const gx = Math.floor(center[0] / NC), gy = Math.floor(center[1] / NC);
     for (let a = gx - 2; a <= gx + 2; a++) for (let b = gy - 2; b <= gy + 2; b++) for (const h of nums.get(`${a},${b}`) || []) {
       const vx = h.p[0] - center[0], vy = h.p[1] - center[1], along = vx * best.s.ux + vy * best.s.uy, lat = vx * nx + vy * ny;
+      if (h.street && h.street !== best.s.name) continue;
       if (Math.abs(along) <= half && lat >= 3 && lat <= 45) h.num % 2 ? odd++ : even++;
     }
-    const parity = odd + even && Math.max(odd, even) / (odd + even) >= 0.7 ? (odd > even ? "odd" : "even") : null;
+    let parity = odd + even && Math.max(odd, even) / (odd + even) >= 0.7 ? (odd > even ? "odd" : "even") : null;
     const rec = { i, center, parity, nx, ny };
+    if (holdout && parity && holdout.pick()) { rec.truth = parity; rec.parity = null; } // SWEEP_HOLDOUT: hide some known sides to measure the guesses
     (curbsByName.get(best.s.name) || curbsByName.set(best.s.name, []).get(best.s.name)).push(rec);
   });
   // OSM house numbers are sparse, so spread what's known: the curb facing a known side has the other parity, and
@@ -157,7 +170,10 @@ export function assignSweeping(features, policies, rows, osm, { log = () => {} }
       }
       if (!changed) break;
     }
-    for (const a of list) stats.curbParity[a.parity || "unknown"]++;
+    for (const a of list) {
+      stats.curbParity[a.parity || "unknown"]++;
+      if (a.truth) { holdout.n++; if (a.parity === a.truth) holdout.right++; else if (a.parity) holdout.wrong++; }
+    }
   }
 
   // Rows for the same stretch on both sides with the same schedule don't need the side resolved.
@@ -166,11 +182,14 @@ export function assignSweeping(features, policies, rows, osm, { log = () => {} }
   const sidesAgree = new Map();
   for (const r of rows) { const k = stretch(r), v = sidesAgree.get(k); sidesAgree.set(k, v === undefined ? sched(r) : v === sched(r) ? v : false); }
 
-  const meets = (street, cross) => {
+  // Where the cross street meets this one. A cross street whose line stops just short (a T across a wide road, a
+  // slightly misdrawn junction) gets a second, looser look.
+  const meetsWithin = (street, cross, tol) => {
     const out = [];
-    for (const s of street) for (const t of cross) { const m = segMeet(s, t); if (m.d < 15 && !out.some((o) => d2(o, m.at) < 30)) out.push(m.at); }
+    for (const s of street) for (const t of cross) { const m = segMeet(s, t); if (m.d < tol && !out.some((o) => d2(o, m.at) < 30)) out.push(m.at); }
     return out;
   };
+  const meets = (street, cross) => { const m = meetsWithin(street, cross, 15); return m.length ? m : meetsWithin(street, cross, 35); };
   // "Dead End", or the city line ("Brookline Town Line"): the street simply ends within Boston.
   const deadEnd = (n) => !n || /dead\s*end|^end$|town\s*line|city\s*line/i.test(n);
   // The cross street's segments: by exact name, else among streets that actually meet this one, the closest name
@@ -196,9 +215,18 @@ export function assignSweeping(features, policies, rows, osm, { log = () => {} }
     const name = normName(r.st_name), street = byName.get(name), curbs = curbsByName.get(name);
     if (!street || !curbs) { stats.skipped.noStreet++; continue; }
     const target = (+r.miles || 0) * 1609.34;
-    const A = deadEnd(r.from) ? null : meets(street, crossSegs(name, street, r.from));
-    const B = deadEnd(r.to) ? null : meets(street, crossSegs(name, street, r.to));
+    let A = deadEnd(r.from) ? null : meets(street, crossSegs(name, street, r.from));
+    let B = deadEnd(r.to) ? null : meets(street, crossSegs(name, street, r.to));
+    // "Tremont St to Tremont St" with a single junction: a loop or cul-de-sac off it, so the far end is the street's end.
+    if (A?.length === 1 && B?.length === 1 && normName(r.from) === normName(r.to)) B = null;
     let p1 = null, p2 = null;
+    if (A === null && B === null) {
+      // "Dead End to Dead End": the whole street (its two farthest-apart ends).
+      const ends = street.flatMap((s) => [[s.ax, s.ay], [s.bx, s.by]]);
+      let best = -1;
+      for (const a of ends) for (const b of ends) { const d = d2(a, b); if (d > best) { best = d; p1 = a; p2 = b; } }
+      if (target && Math.abs(best - target) > Math.max(80, target * 0.5)) p1 = p2 = null; // not this street, or not all of it
+    }
     if (A?.length && B?.length) {
       let best = Infinity;
       for (const a of A) for (const b of B) {
@@ -217,22 +245,27 @@ export function assignSweeping(features, policies, rows, osm, { log = () => {} }
     const span = d2(p1, p2), slack = Math.max(25, span * 0.08);
     const side = /odd/i.test(r.side) ? "odd" : /even/i.test(r.side) ? "even" : null;
     const policy = rowPolicy(r);
-    let attached = 0, overridden = 0;
+    let attached = 0, overridden = 0, inStretch = 0, otherSide = 0, inFeed = 0;
     for (const c of curbs) {
       if (d2(c.center, p1) + d2(c.center, p2) > span + slack) continue;
-      if (side && c.parity !== side && !(c.parity === null && sidesAgree.get(stretch(r)))) continue;
+      inStretch++;
+      if (side && c.parity !== side && !(c.parity === null && sidesAgree.get(stretch(r)))) { otherSide++; continue; }
       const f = features[c.i], ids = f.properties.curb_policy_ids || [];
       if (ids.includes(policy.curb_policy_id)) continue;
-      if (ids.some((id) => policies[id] && !String(id).startsWith("sweep-") && isStreetCleaningPolicy(policies[id]))) { stats.keptCurbFeedCleaning++; continue; }
+      if (ids.some((id) => policies[id] && !String(id).startsWith("sweep-") && isStreetCleaningPolicy(policies[id]))) { stats.keptCurbFeedCleaning++; inFeed++; continue; }
       // Cleaning can't apply where an always-on rule of higher precedence (a hydrant's "no stopping") already holds.
       if (overriddenBy(policy, ids.map((id) => policies[id]).filter(Boolean))) { stats.overridden++; overridden++; continue; }
       f.properties = { ...f.properties, curb_policy_ids: [...ids, policy.curb_policy_id] };
       attached++;
     }
-    if (!attached) { if (!overridden) stats.skipped.noCurbs++; continue; }
+    if (!attached) {
+      if (!overridden) { stats.skipped.noCurbs++; stats.noCurbsWhy[!inStretch ? "nothingInStretch" : inFeed ? "alreadyInFeed" : otherSide === inStretch ? "otherSide" : "nothingInStretch"]++; }
+      continue;
+    }
     policies[policy.curb_policy_id] = policy;
     stats.rowsMatched++; stats.curbsSwept += attached;
   }
-  log(`  street sweeping: ${stats.rowsMatched}/${stats.rows} rows matched → ${stats.curbsSwept} curb assignments; skipped ${JSON.stringify(stats.skipped)}; curb sides odd/even/unknown ${stats.curbParity.odd}/${stats.curbParity.even}/${stats.curbParity.unknown}; kept curb-feed cleaning on ${stats.keptCurbFeedCleaning}; left off ${stats.overridden} where an always-on rule overrides it`);
+  if (holdout) log(`  sweeping side guesses on held-out curbs: ${holdout.right} right, ${holdout.wrong} wrong, ${holdout.n - holdout.right - holdout.wrong} still unknown`);
+  log(`  street sweeping: ${stats.rowsMatched}/${stats.rows} rows matched → ${stats.curbsSwept} curb assignments; skipped ${JSON.stringify(stats.skipped)} (no curbs: ${JSON.stringify(stats.noCurbsWhy)}); curb sides odd/even/unknown ${stats.curbParity.odd}/${stats.curbParity.even}/${stats.curbParity.unknown}; kept curb-feed cleaning on ${stats.keptCurbFeedCleaning}; left off ${stats.overridden} where an always-on rule overrides it`);
   return stats;
 }

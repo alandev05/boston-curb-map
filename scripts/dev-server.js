@@ -22,6 +22,7 @@ try {
   }
 } catch {}
 const PORT = Number(args.port || process.env.PORT || 3000);
+const DIST = path.resolve(root, process.env.DIST || "dist"); // the browser tests serve their own build (.ui/dist)
 const VITE = args.vite ? Number(args.vite) : null;
 
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml", ".map": "application/json" };
@@ -34,8 +35,8 @@ function shim(req, res, url) {
 }
 
 async function serveStatic(res, urlPath) {
-  let p = path.join(root, "dist", urlPath === "/" ? "index.html" : urlPath === "/review" ? "index.html" : urlPath);
-  try { if ((await stat(p)).isDirectory()) p = path.join(p, "index.html"); } catch { p = path.join(root, "dist", "index.html"); }
+  let p = path.join(DIST, urlPath === "/" ? "index.html" : urlPath === "/review" ? "index.html" : urlPath);
+  try { if ((await stat(p)).isDirectory()) p = path.join(p, "index.html"); } catch { p = path.join(DIST, "index.html"); }
   try {
     const body = await readFile(p);
     const headers = { "Content-Type": MIME[path.extname(p)] || "application/octet-stream" };

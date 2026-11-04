@@ -6,3 +6,6 @@ data/raw
 public/tiles
 public/data
 supabase/.temp
+.ui
+test-results
+playwright-report

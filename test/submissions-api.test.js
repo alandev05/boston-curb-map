@@ -4,6 +4,7 @@ import submit, { DAILY_LIMIT } from "../api/submit.js";
 import curb from "../api/curb.js";
 import confirm from "../api/confirm.js";
 import review from "../api/review.js";
+import cron from "../api/cron.js";
 import { cardToPolicy, newCard } from "../src/submission.js";
 
 const realFetch = globalThis.fetch;
@@ -116,5 +117,20 @@ describe("/api/review", () => {
     expect(res.statusCode).toBe(200);
     expect(writes.filter((w) => w.method === "PATCH").map((w) => w.body.status)).toContain("accepted");
     expect(writes.find((w) => w.table === "events").body).toMatchObject({ action: "accepted", actor: "reviewer:Alan" });
+  });
+});
+
+describe("/api/cron", () => {
+  it("only runs for Vercel Cron, then touches the database and starts a rebuild", async () => {
+    process.env.CRON_SECRET = "cronsecret"; process.env.DEPLOY_HOOK_URL = "https://hooks.test/deploy";
+    let { req, res } = get({}, { authorization: "Bearer nope" });
+    await cron(req, res);
+    expect(res.statusCode).toBe(401);
+    const { f } = fakeDb({ events: [] });
+    ({ req, res } = get({}, { authorization: "Bearer cronsecret" }));
+    await cron(req, res);
+    expect(res.json).toEqual({ supabase: "ok", rebuild: "started" });
+    expect(f.calls.some((c) => c.url.hostname === "hooks.test" && c.init.method === "POST")).toBe(true);
+    delete process.env.CRON_SECRET; delete process.env.DEPLOY_HOOK_URL;
   });
 });

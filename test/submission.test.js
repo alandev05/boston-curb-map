@@ -38,6 +38,14 @@ describe("policies → rule cards (editor prefill)", () => {
     expect(policyToCards({ rules: [{ activity: "no parking" }], time_spans: [{ designated_period: '{"snow emergency"}', time_of_day_start: "00:00", time_of_day_end: "00:00" }] })).toEqual([]);
     expect(policyToCards({ rules: [{ activity: "unusable image" }], time_spans: [] })).toEqual([]);
   });
+  it("the same rule listed twice, or split by weekday, is one card", () => {
+    const mon = { ...newCard("street_cleaning"), days: ["mon"], start: "00:00", end: "07:00" };
+    const twice = cardsFor([cardToPolicy(mon, "a"), cardToPolicy(mon, "b")]);
+    expect(twice).toHaveLength(1);
+    const split = cardsFor([cardToPolicy(mon, "a"), cardToPolicy({ ...mon, days: ["thu"] }, "b")]);
+    expect(split.map((c) => c.days)).toEqual([["mon", "thu"]]);
+    expect(cardsFor([cardToPolicy(mon, "a"), cardToPolicy({ ...mon, end: "08:00" }, "b")])).toHaveLength(2); // different hours stay apart
+  });
   it("on a metered curb, free-parking signs are implied and left out", () => {
     const meter = cardToPolicy(newCard("paid"), "m"), sign = cardToPolicy({ ...newCard("free"), limit: 120 }, "f");
     expect(cardsFor([meter, sign]).map((c) => c.type)).toEqual(["paid"]);

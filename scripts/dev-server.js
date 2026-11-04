@@ -34,7 +34,7 @@ function shim(req, res, url) {
 }
 
 async function serveStatic(res, urlPath) {
-  let p = path.join(root, "dist", urlPath === "/" ? "index.html" : urlPath === "/review" ? "review.html" : urlPath);
+  let p = path.join(root, "dist", urlPath === "/" ? "index.html" : urlPath === "/review" ? "index.html" : urlPath);
   try { if ((await stat(p)).isDirectory()) p = path.join(p, "index.html"); } catch { p = path.join(root, "dist", "index.html"); }
   try {
     const body = await readFile(p);

@@ -42,7 +42,7 @@ export function ipHash(req) {
 }
 
 export function isAdmin(req) {
-  const want = process.env.ADMIN_TOKEN, got = String(req.headers?.["x-admin-token"] || "");
+  const want = process.env.ADMIN_TOKEN?.trim(), got = String(req.headers?.["x-admin-token"] || "").trim(); // a pasted value may carry a newline
   if (!want || got.length !== want.length) return false;
   return timingSafeEqual(Buffer.from(got), Buffer.from(want));
 }

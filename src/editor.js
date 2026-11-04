@@ -1,9 +1,12 @@
-// Community submissions, inside the curb popup: "Looks right", pending corrections ("Matches what I see"), and the
+// Community submissions, inside the curb popup: pending corrections ("Matches what I see"), and the
 // "Fix this curb" editor (rule cards prefilled from the curb's current rules, a stretch of the curb, a live preview of
 // the day, an optional note / photo / location). Everything goes through the API (api/submit.js etc.); nothing is
 // written to the map until a moderator accepts it and the data is rebuilt.
+import maplibregl from "maplibre-gl";
 import { RULE_TYPES, WEEK, LIMITS, newCard, cardToPolicy, cardsFor } from "./submission.js";
 import { CATEGORIES, catColor, fmtTime, isRealPolicy, overriddenBy } from "./rules.js";
+import { chain, slice } from "./curbgeom.js";
+import { curbOffsetPx, mpp } from "./basemap.js";
 
 const DAY_LETTER = { mon: "M", tue: "T", wed: "W", thu: "T", fri: "F", sat: "S", sun: "S" };
 const DAY_NAME = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
@@ -52,19 +55,10 @@ export function createEditor(d) {
 
   // ---------- popup footer: confirm, pending corrections, open the editor ----------
   async function actions(el, feature, zone, back, lngLat) {
-    el.innerHTML = `<div class="pending"></div><div class="act-row"><button type="button" class="act ok">✓ Looks right</button><button type="button" class="act fix">✎ Fix this curb</button></div>`;
+    el.innerHTML = `<div class="pending"></div><div class="act-row"><button type="button" class="act fix">✎ Fix this curb</button></div>`;
     const info = await curbInfo(feature.id);
     if (!el.isConnected) return;
     if (!info) { el.remove(); return; }
-    const confirmedKey = `confirmed:${info.zone}`, ok = el.querySelector(".ok");
-    if (d.store.get(confirmedKey)) { ok.textContent = "✓ You confirmed this"; ok.disabled = true; }
-    ok.onclick = async () => {
-      ok.disabled = true;
-      try {
-        await api("/api/submit", { kind: "confirm", curb_zone_id: info.zone, stretch: info.from != null ? [info.from, info.to] : null, curb_length: info.len, based_on: d.rulesets()[info.rs], data_version: d.manifest()?.version, device_id: deviceId() });
-        d.store.set(confirmedKey, new Date().toISOString().slice(0, 10)); ok.textContent = "✓ Thanks — noted";
-      } catch (e) { ok.disabled = false; ok.textContent = "✓ Looks right"; ok.title = e.message; }
-    };
     el.querySelector(".fix").onclick = () => open(feature, zone, info, back, lngLat);
     // Pending corrections from others: preview for the selected day, and agree with one.
     try {
@@ -94,13 +88,13 @@ export function createEditor(d) {
     const cards = cardsFor(all.filter((p) => !overriddenBy(p, all)));
     const a = info.from ?? 0, b = info.to ?? info.len;
     state = {
-      feature, info, back, point: lngLat ? [+lngLat.lng.toFixed(6), +lngLat.lat.toFixed(6)] : null, cards, range: [a, b], stretch: [a, b], part: false,
+      feature, info, back, point: lngLat ? [+lngLat.lng.toFixed(6), +lngLat.lat.toFixed(6)] : null, cards, range: [a, b], frac: [0, 1],
       note: "", photo: null, loc: false, day: dayOf(d.startTime()), done: false, busy: false, error: null,
     };
     const root = d.$("#popup");
     root.classList.add("editing"); document.body.classList.add("editing");
     root.onclick = onClick; root.oninput = onInput; root.onchange = onChange;
-    drawStretch(true);
+    startStretch();
     render();
   }
   const dayOf = (t) => ["sun", "mon", "tue", "wed", "thu", "fri", "sat"][t.getDay()];
@@ -109,7 +103,7 @@ export function createEditor(d) {
     const root = d.$("#popup");
     root.classList.remove("editing"); document.body.classList.remove("editing");
     root.onclick = root.oninput = root.onchange = null;
-    drawStretch(false);
+    stopStretch();
     state = null;
   }
   const exit = () => { const back = state?.back; close(); back ? back() : d.close(); };
@@ -148,15 +142,12 @@ export function createEditor(d) {
       d.resize(); return;
     }
     const rules = s.cards.map((c, i) => cardToPolicy(c, `draft-${i}`)), { zone, pols } = draftZone(rules);
-    const L = s.range[1] - s.range[0], issue = problem();
+    const issue = problem();
     root.innerHTML = `
       <div class="ed-head"><b>Fix this curb</b><button type="button" class="x" data-act="cancel" aria-label="close">×</button></div>
       <p class="ed-hint">Make this match the sign. Each card is one rule; the preview shows what the map would say.</p>
-      <div class="ed-sec">
-        <div class="seg"><button type="button" data-act="whole" aria-pressed="${!s.part}">Whole curb · ${Math.round(L)} m</button><button type="button" data-act="part" aria-pressed="${s.part}">Only part of it</button></div>
-        ${s.part ? `<div class="range2"><input type="range" data-act="sa" min="${s.range[0]}" max="${s.range[1]}" step="0.5" value="${s.stretch[0]}" aria-label="Stretch start"><input type="range" data-act="sb" min="${s.range[0]}" max="${s.range[1]}" step="0.5" value="${s.stretch[1]}" aria-label="Stretch end"></div>
-          <small class="muted stretch-label">${stretchLabel()}</small>` : ""}
-      </div>
+      <div class="ed-stretch"><b>${stretchLabel()}</b>${isWhole() ? "" : `<button type="button" class="link" data-act="whole">Use the whole curb</button>`}</div>
+      ${s.runs?.length ? `<p class="ed-hint">Drag the handles at the ends of the curb on the map to fix just part of it.</p>` : ""}
       <div class="ed-cards">${s.cards.map(cardHTML).join("") || `<p class="muted">No rules yet — add the ones posted on the sign.</p>`}</div>
       <button type="button" class="ed-add" data-act="add">+ Add rule</button>
       <div class="ed-sec ed-preview">
@@ -175,7 +166,9 @@ export function createEditor(d) {
     root.scrollTop = scroll;
     d.resize();
   }
-  const stretchLabel = () => `${Math.round(state.stretch[0] - state.range[0])}–${Math.round(state.stretch[1] - state.range[0])} m of ${Math.round(state.range[1] - state.range[0])} m (${Math.round(state.stretch[1] - state.stretch[0])} m)`;
+  const span = () => state.range[1] - state.range[0];
+  const isWhole = () => state.frac[0] <= 0.001 && state.frac[1] >= 0.999;
+  const stretchLabel = () => (isWhole() ? `Whole curb · ${Math.round(span())} m` : `${Math.round((state.frac[1] - state.frac[0]) * span())} m of ${Math.round(span())} m`);
 
   // ---------- events (delegated on the popup) ----------
   function onClick(e) {
@@ -196,8 +189,7 @@ export function createEditor(d) {
       case "day": c.days = c.days.includes(el.dataset.d) ? c.days.filter((x) => x !== el.dataset.d) : WEEK.filter((x) => x === el.dataset.d || c.days.includes(x)); break;
       case "week": { const w = +el.dataset.w; c.weeks = c.weeks.includes(w) ? c.weeks.filter((x) => x !== w) : [...c.weeks, w].sort(); break; }
       case "pday": s.day = el.dataset.d; break;
-      case "whole": s.part = false; s.stretch = [...s.range]; drawStretch(true); break;
-      case "part": s.part = true; drawStretch(true); break;
+      case "whole": s.frac = [0, 1]; placeStretch(); break;
       case "rmphoto": s.photo = null; break;
       default: return;
     }
@@ -221,13 +213,6 @@ export function createEditor(d) {
     if (!s) return;
     if (el.dataset.act === "note") s.note = el.value;
     else if (el.dataset.act === "rate") s.cards[+el.dataset.i].rate = el.value === "" ? null : +el.value;
-    else if (el.dataset.act === "sa" || el.dataset.act === "sb") {
-      const v = +el.value, gap = Math.min(2, (s.range[1] - s.range[0]) / 2);
-      if (el.dataset.act === "sa") s.stretch[0] = Math.min(v, s.stretch[1] - gap); else s.stretch[1] = Math.max(v, s.stretch[0] + gap);
-      el.value = el.dataset.act === "sa" ? s.stretch[0] : s.stretch[1];
-      d.$("#popup .stretch-label").textContent = stretchLabel();
-      drawStretch(true);
-    }
   }
   async function onChange(e) {
     const s = state, el = e.target;
@@ -257,76 +242,177 @@ export function createEditor(d) {
     if (s.loc && navigator.geolocation) {
       location = await new Promise((ok) => navigator.geolocation.getCurrentPosition((p) => ok({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy }), () => ok(null), { enableHighAccuracy: true, timeout: 8000 }));
     }
-    const whole = !s.part && s.info.from == null;
+    const whole = isWhole() && s.info.from == null, at = (f) => +(s.range[0] + f * span()).toFixed(1);
     try {
       await api("/api/submit", {
         kind: "correction", curb_zone_id: s.info.zone, curb_length: s.info.len, point: s.point,
-        stretch: whole ? null : [+s.stretch[0].toFixed(1), +s.stretch[1].toFixed(1)],
+        stretch: whole ? null : [at(s.frac[0]), at(s.frac[1])],
         rules: s.cards.map((c, i) => { const { curb_policy_id, ...p } = cardToPolicy(c, String(i)); return p; }),
         based_on: d.rulesets()[s.info.rs], data_version: d.manifest()?.version,
         note: s.note.trim() || null, photo: s.photo, location, device_id: deviceId(),
       });
       if (state !== s) return;
-      s.done = true; s.busy = false; drawStretch(false); render();
+      s.done = true; s.busy = false; stopStretch(); render();
     } catch (e) {
       if (state !== s) return;
       s.busy = false; s.error = e.message; render();
     }
   }
 
-  // ---------- the chosen stretch, highlighted on the map ----------
-  // The drawn curb (tile geometry, offset to its road edge like the curb itself); the stretch is the same share of it.
-  function drawStretch(on) {
-    const map = d.map;
-    if (!on || !state) {
-      if (map.getLayer("edit-stretch")) map.removeLayer("edit-stretch");
-      if (map.getSource("edit-stretch")) map.removeSource("edit-stretch");
-      return;
+  // ---------- choosing the stretch: handles on the map ----------
+  // The curb as drawn (tile centerline, pushed to its road edge by the same offset the curb layer uses), as runs in
+  // order along it: a curb that wraps a corner is drawn as one run per street, with a gap at the corner, and the
+  // handles slide across all of them (fractions are of the runs' total length). The whole curb starts selected; a handle at each end slides along it. The selection stays bright, the rest is dimmed, and
+  // the curb's meters show as dots to line the ends up with the signs. Fractions are measured along the centerline.
+  const KY = 1 / Math.cos((42.35 * Math.PI) / 180); // degrees of latitude are longer than of longitude here
+  function startStretch() {
+    const s = state, map = d.map;
+    const parts = map.queryRenderedFeatures({ layers: DRAW_LAYERS }).filter((f) => f.id === s.feature.id)
+      .flatMap((f) => (f.geometry.type === "MultiLineString" ? f.geometry.coordinates : [f.geometry.coordinates]));
+    s.runs = runsOf(parts).filter((r) => r.length >= 2);
+    s.props = { side: s.feature.properties.side ?? 0, rc: s.feature.properties.rc ?? "" };
+    if (!s.runs.length) return; // not drawn here: the whole curb it is
+    // Per run: where it starts along the curb, and the running length at each vertex.
+    let start = 0;
+    s.meas = s.runs.map((r) => {
+      const cum = [0];
+      for (let k = 1; k < r.length; k++) cum.push(cum[k - 1] + gdist(r[k], r[k - 1]));
+      const m = { start, cum, len: cum.at(-1) };
+      start += m.len;
+      return m;
+    });
+    s.total = start || 1;
+    s.meterFracs = metersOnCurb();
+    const handle = (i) => {
+      const el = document.createElement("div");
+      el.className = "stretch-handle"; el.setAttribute("aria-label", i ? "End of the stretch" : "Start of the stretch");
+      const m = new maplibregl.Marker({ element: el, draggable: true }).setLngLat(pointAt(s.frac[i])).addTo(map);
+      m.on("drag", () => {
+        const gap = Math.min(0.5, 2 / (span() || 1)), f = fracAt(m.getLngLat());
+        s.frac[i] = i ? Math.max(f, s.frac[0] + gap) : Math.min(f, s.frac[1] - gap);
+        placeStretch(false);
+      });
+      m.on("dragend", () => render());
+      return m;
+    };
+    s.handles = [handle(0), handle(1)];
+    s.onMove = () => placeStretch(false);
+    map.on("move", s.onMove);
+    // Frame the curb in the part of the map the editor leaves free.
+    const all = s.runs.flat(), lons = all.map((p) => p[0]), lats = all.map((p) => p[1]), phoneView = innerWidth <= 640;
+    map.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], {
+      padding: phoneView ? { top: 60, bottom: Math.round(innerHeight * 0.55) + 30, left: 40, right: 40 } : { top: 80, bottom: 80, left: (d.$("#panel")?.offsetWidth || 0) + 70, right: 380 + 100 }, // between the side panel and the editor
+      maxZoom: 19.5, duration: 600,
+    });
+    placeStretch(false);
+  }
+  function stopStretch() {
+    const s = state, map = d.map;
+    if (s?.onMove) map.off("move", s.onMove);
+    for (const m of s?.handles || []) m.remove();
+    if (s) { s.handles = null; s.onMove = null; }
+    for (const id of ["edit-ticks", "edit-stretch", "edit-dim"]) if (map.getLayer(id)) map.removeLayer(id);
+    for (const id of ["edit-stretch", "edit-ticks"]) if (map.getSource(id)) map.removeSource(id);
+  }
+  const gdist = (p, q) => Math.hypot(p[0] - q[0], (p[1] - q[1]) * KY);
+  // Pieces of one drawn curb → its runs, in order along the curb. Pieces that touch are joined (a curb crossing a tile
+  // edge); the runs are then strung together nearest end to nearest end, starting from the end that's farthest from
+  // everything else.
+  function runsOf(parts) {
+    const left = parts.map((p) => [...p]), runs = [];
+    while (left.length) runs.push(chain(left)); // chain() takes the pieces it joins out of `left`
+    if (runs.length < 2) return runs;
+    const ends = (r) => [r[0], r.at(-1)];
+    let first = null;
+    runs.forEach((r, i) => ends(r).forEach((e, which) => {
+      const d = Math.min(...runs.filter((_, j) => j !== i).flatMap((o) => ends(o).map((x) => gdist(e, x))));
+      if (!first || d > first.d) first = { i, which, d };
+    }));
+    const out = [first.which === 0 ? runs[first.i] : [...runs[first.i]].reverse()], rest = runs.filter((_, j) => j !== first.i);
+    while (rest.length) {
+      const tail = out.at(-1).at(-1);
+      let best = null;
+      rest.forEach((r, j) => ends(r).forEach((e, which) => { const d = gdist(tail, e); if (!best || d < best.d) best = { j, which, d }; }));
+      const r = rest.splice(best.j, 1)[0];
+      out.push(best.which === 0 ? r : [...r].reverse());
     }
+    return out;
+  }
+  // Which run a length along the curb falls in, and where within it.
+  function locate(t) {
     const s = state;
-    if (!s.line) {
-      const parts = map.queryRenderedFeatures({ layers: DRAW_LAYERS }).filter((f) => f.id === s.feature.id)
-        .flatMap((f) => (f.geometry.type === "MultiLineString" ? f.geometry.coordinates : [f.geometry.coordinates]));
-      s.line = chain(parts);
-      s.props = { side: s.feature.properties.side ?? 0, rc: s.feature.properties.rc ?? "" };
+    let i = 0;
+    while (i < s.runs.length - 1 && t > s.meas[i].start + s.meas[i].len) i++;
+    return { i, t: Math.max(0, Math.min(s.meas[i].len, t - s.meas[i].start)) };
+  }
+  // Where a fraction of the curb is drawn: on the centerline, pushed sideways by the curb's offset at this zoom.
+  function pointAt(f) {
+    const s = state, map = d.map, { i, t } = locate(Math.max(0, Math.min(1, f)) * s.total), line = s.runs[i], cum = s.meas[i].cum;
+    let k = 1;
+    while (k < line.length - 1 && cum[k] < t) k++;
+    const a = line[k - 1], b = line[k], u = (t - cum[k - 1]) / ((cum[k] - cum[k - 1]) || 1);
+    const pa = map.project(a), pb = map.project(b), L = Math.hypot(pb.x - pa.x, pb.y - pa.y) || 1;
+    const off = (s.props.side || 0) * curbOffsetPx(s.props.rc || "minor", map.getZoom());
+    const x = pa.x + (pb.x - pa.x) * u - ((pb.y - pa.y) / L) * off, y = pa.y + (pb.y - pa.y) * u + ((pb.x - pa.x) / L) * off;
+    return map.unproject([x, y]);
+  }
+  // The fraction of the curb nearest a point on screen (the offset doesn't change which part of the curb is nearest).
+  function fracAt(lngLat) {
+    const s = state, map = d.map, q = map.project(lngLat);
+    let best = { d: Infinity, f: 0 };
+    s.runs.forEach((line, i) => {
+      const { start, cum } = s.meas[i];
+      for (let k = 1; k < line.length; k++) {
+        const a = map.project(line[k - 1]), b = map.project(line[k]), dx = b.x - a.x, dy = b.y - a.y;
+        const u = Math.max(0, Math.min(1, ((q.x - a.x) * dx + (q.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
+        const dist = Math.hypot(q.x - a.x - u * dx, q.y - a.y - u * dy);
+        if (dist < best.d) best = { d: dist, f: (start + cum[k - 1] + u * (cum[k] - cum[k - 1])) / s.total };
+      }
+    });
+    return best.f;
+  }
+  // Meters standing beside this curb (within ~8 m), as fractions along it. They're in the tiles even while hidden.
+  function metersOnCurb() {
+    const map = d.map;
+    if (!map.getSource("curbs")) return [];
+    const px = 8 / mpp(map.getZoom()), seen = new Set(), out = [];
+    for (const m of map.querySourceFeatures("curbs", { sourceLayer: "meters" })) {
+      const c = m.geometry.coordinates, key = c.join();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const f = fracAt({ lng: c[0], lat: c[1] }), p = map.project(pointAt(f)), q = map.project(c);
+      if (Math.hypot(p.x - q.x, p.y - q.y) < px + 12) out.push(f);
     }
-    const span = s.range[1] - s.range[0] || 1, a = (s.stretch[0] - s.range[0]) / span, b = (s.stretch[1] - s.range[0]) / span;
-    const data = { type: "Feature", properties: s.props, geometry: { type: "LineString", coordinates: slice(s.line, a, b) } };
-    if (map.getSource("edit-stretch")) map.getSource("edit-stretch").setData(data);
+    return out;
+  }
+  function placeStretch(full = true) {
+    const s = state, map = d.map;
+    if (!s?.runs?.length) return;
+    s.handles?.forEach((m, i) => m.setLngLat(pointAt(s.frac[i])));
+    // The part of each run between two fractions of the whole curb.
+    const pieces = (x, y, kind) => s.runs.flatMap((line, i) => {
+      const r0 = s.meas[i].start / s.total, r1 = (s.meas[i].start + s.meas[i].len) / s.total, lo = Math.max(x, r0), hi = Math.min(y, r1);
+      return hi - lo > 1e-6 ? [{ type: "Feature", properties: { ...s.props, kind }, geometry: { type: "LineString", coordinates: slice(line, (lo - r0) / ((r1 - r0) || 1), (hi - r0) / ((r1 - r0) || 1)) } }] : [];
+    });
+    const [a, b] = s.frac;
+    const lines = { type: "FeatureCollection", features: [...pieces(a, b, "sel"), ...(a > 0.001 ? pieces(0, a, "dim") : []), ...(b < 0.999 ? pieces(b, 1, "dim") : [])] };
+    const ticks = { type: "FeatureCollection", features: (s.meterFracs || []).map((f) => ({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: pointAt(f).toArray() } })) };
+    const light = theme() === "light";
+    if (map.getSource("edit-stretch")) { map.getSource("edit-stretch").setData(lines); map.getSource("edit-ticks").setData(ticks); }
     else {
-      map.addSource("edit-stretch", { type: "geojson", data });
-      map.addLayer({ id: "edit-stretch", type: "line", source: "edit-stretch", layout: { "line-cap": "round" },
-        paint: { "line-color": theme() === "light" ? "#15181f" : "#ffffff", "line-opacity": 0.55, "line-width": ["interpolate", ["exponential", 2], ["zoom"], 14, 4, 18, 12, 20, 22], "line-offset": map.getPaintProperty("zone-line", "line-offset") } });
+      const offset = map.getPaintProperty("zone-line", "line-offset");
+      map.addSource("edit-stretch", { type: "geojson", data: lines });
+      map.addSource("edit-ticks", { type: "geojson", data: ticks });
+      map.addLayer({ id: "edit-dim", type: "line", source: "edit-stretch", filter: ["==", ["get", "kind"], "dim"], layout: { "line-cap": "round" },
+        paint: { "line-color": light ? "#eef0f3" : "#0d0f14", "line-opacity": 0.75, "line-width": ["interpolate", ["exponential", 2], ["zoom"], 14, 4, 18, 8, 20, 16], "line-offset": offset } });
+      map.addLayer({ id: "edit-stretch", type: "line", source: "edit-stretch", filter: ["==", ["get", "kind"], "sel"], layout: { "line-cap": "round" },
+        paint: { "line-color": light ? "#15181f" : "#ffffff", "line-opacity": 0.5, "line-width": ["interpolate", ["exponential", 2], ["zoom"], 14, 5, 18, 13, 20, 24], "line-offset": offset } });
+      map.addLayer({ id: "edit-ticks", type: "circle", source: "edit-ticks",
+        paint: { "circle-radius": 3.5, "circle-color": light ? "#1a73e8" : "#8ab4f8", "circle-stroke-width": 1.5, "circle-stroke-color": light ? "#ffffff" : "#0d0f14" } });
     }
-  }
-  // Tile pieces of one curb, joined end to end (a curb can cross a tile edge).
-  function chain(parts) {
-    if (!parts.length) return [];
-    const near = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]) < 1e-6;
-    let line = [...parts.shift()];
-    while (parts.length) {
-      const i = parts.findIndex((p) => near(p[0], line.at(-1)) || near(p.at(-1), line.at(-1)) || near(p.at(-1), line[0]) || near(p[0], line[0]));
-      if (i < 0) break;
-      const p = parts.splice(i, 1)[0];
-      if (near(p[0], line.at(-1))) line = [...line, ...p.slice(1)];
-      else if (near(p.at(-1), line.at(-1))) line = [...line, ...p.reverse().slice(1)];
-      else if (near(p.at(-1), line[0])) line = [...p, ...line.slice(1)];
-      else line = [...p.reverse(), ...line.slice(1)];
-    }
-    return line;
-  }
-  function slice(line, a, b) {
-    const seg = line.slice(1).map((p, k) => Math.hypot(p[0] - line[k][0], (p[1] - line[k][1]) * 1.35));
-    const total = seg.reduce((x, y) => x + y, 0) || 1, out = [];
-    let run = 0;
-    for (let k = 0; k < seg.length; k++) {
-      const p = line[k], q = line[k + 1], from = run / total, to = (run + seg[k]) / total;
-      const at = (f) => { const u = (f - from) / ((to - from) || 1); return [p[0] + (q[0] - p[0]) * u, p[1] + (q[1] - p[1]) * u]; };
-      if (to >= a && from <= b) { if (!out.length) out.push(at(Math.max(a, from))); out.push(to <= b ? q : at(b)); }
-      run += seg[k];
-    }
-    return out.length >= 2 ? out : line;
+    if (full) render();
+    else { const lbl = d.$("#popup .ed-stretch b"); if (lbl) lbl.textContent = stretchLabel(); }
   }
 
-  return { actions, close, get editing() { return !!state; } };
+  return { actions, close, curbInfo, get editing() { return !!state; } };
 }

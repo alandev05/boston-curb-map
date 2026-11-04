@@ -11,7 +11,8 @@ const withPhotos = (rows) => Promise.all((rows || []).map(async (r) => ({ ...r, 
 const overlaps = (a, b) => a.stretch_from == null || b.stretch_from == null || (a.stretch_from < b.stretch_to && b.stretch_from < a.stretch_to);
 
 export default async function handler(req, res) {
-  if (!isAdmin(req)) return reply(res, 401, { error: "admin token required" });
+  if (!process.env.ADMIN_TOKEN?.trim()) return reply(res, 503, { error: "ADMIN_TOKEN isn't set on the server (Vercel → Settings → Environment Variables, then redeploy)" });
+  if (!isAdmin(req)) return reply(res, 401, { error: req.headers?.["x-admin-token"] ? "wrong admin token" : "admin token required" });
   try {
     if (req.method === "GET") {
       const curb = String(req.query?.curb || "");

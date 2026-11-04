@@ -38,7 +38,7 @@ The data is refreshed every time the site is deployed.
 - **Curbs are drawn on the streets.** The city records where the physical curb is; the map draws roads at a stylized width. Each curb is matched to the street it runs along and drawn at that street's edge, and trimmed back where it meets a cross street.
 - **Meters fill in the gaps.** The city's curb records often list every sign on a block together, so one hydrant could paint a whole metered block red. Each meter is matched to the curb it stands on; its schedule becomes that curb's paid hours, and signs that can only cover part of the curb (a hydrant, a bus stop, a loading zone) are listed in the popup instead of coloring the whole block.
 - **Rules are graded in your browser.** When you change the time, the browser works out every curb's rule for that moment (lowest-priority-number rule wins, as in the city's data; meters are free on Sundays and City holidays) and recolors the map without reloading anything.
-- **Corrections are reviewed and logged.** Corrections are stored in Supabase as pending. A moderator compares current and proposed rules on `/review` and accepts or rejects them; accepted corrections are merged into the next build. Every submission, confirmation and decision is written to an append-only log.
+- **Corrections are reviewed and logged.** Corrections are stored in Supabase as pending. Moderators work through them in a panel on the map itself (the inbox button above "find my location", or `/review`, asks for the admin token): picking a request highlights its curb, with current and proposed rules side by side, and they accept or reject it; accepted corrections are merged into the next build. Every submission, confirmation and decision is written to an append-only log.
 
 ## Run it yourself
 
@@ -64,7 +64,7 @@ The site deploys to Vercel. The build (`npm run build`) fetches fresh data, so e
 |---|---|---|
 | `SUPABASE_URL` | config | corrections |
 | `SUPABASE_SECRET_KEY` | secret | corrections (server only, never sent to the browser) |
-| `ADMIN_TOKEN` | secret | the moderators' review page at `/review` |
+| `ADMIN_TOKEN` | secret | moderating corrections (the panel at `/review`) |
 | `DEPLOY_HOOK_URL` | secret, optional | a Vercel deploy hook, so accepting a correction rebuilds the map right away |
 | `IP_SALT` | secret, optional | salting the network fingerprint used for rate limits |
 
@@ -73,8 +73,7 @@ Without the Supabase variables the map works normally; only corrections are unav
 ## Project layout
 
 ```
-index.html, src/       the map: MapLibre, rule engine (src/rules.js), correction editor (src/editor.js)
-review.html            the moderators' review page (/review)
+index.html, src/       the map: MapLibre, rule engine (src/rules.js), correction editor (src/editor.js), moderator panel (src/moderation.js)
 api/                   Vercel functions: corrections (submit, curb, confirm, review) and a live-data fallback
 scripts/               the data build: fetch city data, snap curbs to streets, meters, sweeping, corrections, tiles
 supabase/migrations/   database tables for corrections

@@ -4,6 +4,7 @@ import "./style.css";
 import { CATEGORIES, verdict, daySchedule, policyActive, fmtSpanShort, fmtTime, fmtRate, fmtSpan, dayKey, isRealPolicy, isStreetCleaning, ruleOf, collapsePolicies, overriddenBy, reasonOf, catColor, shade, cityHoliday, stayWindow, evaluateStay } from "./rules.js";
 import { DEMO_ZONES, DEMO_POLICIES } from "./demo.js";
 import { createEditor } from "./editor.js";
+import { createModeration } from "./moderation.js";
 import { buildStyle, curbPaint, CURB_LAYERS, CURB_FADE_ZOOM, CURB_ZOOM, NO_DATA_ZOOM } from "./basemap.js";
 import { CODES, CATEGORY_OF, SLOT_MIN } from "./schedule.js";
 
@@ -622,4 +623,8 @@ const editor = createEditor({
   $, esc, map, store, scheduleRows, ruleBits, fmtDay,
   policies: () => policies, rulesets: () => rulesets, manifest: () => manifest, startTime,
   close: hidePopup, resize: () => syncSheetHeight(),
+});
+// Moderators: the corrections stream, opened from a map button (src/moderation.js).
+createModeration({
+  $, esc, map, store, policies: () => policies, manifest: () => manifest, curbInfo: (id) => editor.curbInfo(id), hidePopup,
 });

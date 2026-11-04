@@ -35,7 +35,7 @@ const NAME = ["coalesce", ["get", "name:en"], ["get", "name"]];
 // ---------- road geometry: metric widths at street zooms, legible minimums when zoomed out ----------
 // Meters per pixel at Boston's latitude for MapLibre's 512px tiles.
 const MPP0 = 78271.517 * Math.cos((42.35 * Math.PI) / 180);
-const mpp = (z) => MPP0 / 2 ** z;
+export const mpp = (z) => MPP0 / 2 ** z;
 // m: curb-to-curb width in meters (from measuring Boston curbs against OSM centerlines: 4–6 m each side).
 // min: pixel floor by zoom so the network reads when zoomed out. from: zoom where the class fades in.
 export const ROADS = {

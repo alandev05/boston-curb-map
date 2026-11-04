@@ -67,10 +67,20 @@ export function policyToCards(p) {
 }
 
 // The cards for a curb's current rules. On a metered curb, free-parking signs are implied (the meter's time limit, and
-// free outside its hours), so they're left out rather than shown as rules of their own.
+// free outside its hours), so they're left out rather than shown as rules of their own. The same rule often arrives
+// twice (the city's street cleaning and the sweeping table's, or two identical city records), and one rule is often
+// split by weekday: cards that match in everything but their days become one card.
 export function cardsFor(policies) {
-  const cards = policies.flatMap(policyToCards);
-  return cards.some((c) => c.type === "paid") ? cards.filter((c) => c.type !== "free") : cards;
+  let cards = policies.flatMap(policyToCards);
+  if (cards.some((c) => c.type === "paid")) cards = cards.filter((c) => c.type !== "free");
+  const merged = new Map();
+  for (const c of cards) {
+    const key = JSON.stringify({ ...c, days: null });
+    const m = merged.get(key);
+    if (m) m.days = WEEK.filter((d) => m.days.includes(d) || c.days.includes(d));
+    else merged.set(key, { ...c, days: [...c.days] });
+  }
+  return [...merged.values()];
 }
 
 // ---------- validation (API) ----------

@@ -96,11 +96,18 @@ describe("POST /api/confirm", () => {
 });
 
 describe("/api/review", () => {
-  it("needs the admin token", async () => {
+  it("needs the admin token, and says which problem it is", async () => {
     fakeDb();
-    const { req, res } = get({}, { "x-admin-token": "wrong-token" });
+    let { req, res } = get({}, { "x-admin-token": "wrong-token" });
     await review(req, res);
-    expect(res.statusCode).toBe(401);
+    expect([res.statusCode, res.json.error]).toEqual([401, "wrong admin token"]);
+    ({ req, res } = get({}, { "x-admin-token": "letmein\n" })); // stray whitespace is ignored
+    await review(req, res);
+    expect(res.statusCode).toBe(200);
+    delete process.env.ADMIN_TOKEN;
+    ({ req, res } = get({}, { "x-admin-token": "letmein" }));
+    await review(req, res);
+    expect(res.statusCode).toBe(503);
   });
   it("accepting supersedes earlier accepted corrections that overlap", async () => {
     const { writes } = fakeDb({ submissions: [{ id: SUB, kind: "correction", status: "pending", curb_zone_id: ZONE, stretch_from: null, stretch_to: null }] });

@@ -378,8 +378,13 @@ function floating(pts, index, tol = 1) {
 //   2. it never runs onto another road: every end is trimmed back from cross streets, unsnapped curbs included,
 //      and a curb that lies wholly inside an intersection isn't drawn (geometry null, so the tiler skips it).
 // Curbs left unsnapped keep side 0 (no offset). `stats` counts what happened, for the build log.
+// opts.usable(feature): whether a curb allows parking/loading; curbs that don't, and that could only be drawn in the
+// middle of a road, aren't drawn.
 export function snapZones(features, roads, opts = {}) {
-  const stats = { snapped: 0, relaxed: 0, unsnapped: {}, clamped: 0, hiddenInIntersection: 0, hiddenThroughBuildings: 0 };
+  const stats = { snapped: 0, relaxed: 0, unsnapped: {}, clamped: 0, hiddenInIntersection: 0, hiddenThroughBuildings: 0, hiddenInRoad: 0 };
+  // Whether a curb allows anything a driver can use (parking, loading, a permit space). The build passes one that
+  // reads the curb's rules; without it every curb counts (nothing is hidden for being in the road).
+  const usable = opts.usable || (() => true);
   if (!roads?.length) return { features, snapped: 0, stats };
   const lat0 = features.find((f) => f.geometry)?.geometry.coordinates.flat(3)[1] ?? 42.35;
   const proj = projector(lat0);
@@ -395,22 +400,133 @@ export function snapZones(features, roads, opts = {}) {
     }
     if (r.fail) {
       stats.unsnapped[r.fail] = (stats.unsnapped[r.fail] || 0) + 1;
-      if (r.fail === "degenerate") return f;
-      let pts = f.geometry.coordinates.map(proj.fwd);
-      if (floating(pts, index)) { pts = clampToRoads(pts, index); stats.clamped++; }
-      const kept = trimHooks(dedupe(trimAtCrossings(pts, 0, "minor", index, opts.trim)));
-      if (kept.length < 2) { stats.hiddenInIntersection++; return { ...f, geometry: null }; }
-      // No road here and the line would cut through a building: the city geometry doesn't match any street on the
-      // map (a private passage, a drawing error). Don't draw it rather than draw it across a block.
-      if (bidx && metersThroughBuildings(kept, index, bidx) >= Math.min(6, lengthOf(kept) * 0.3)) { stats.hiddenThroughBuildings++; return { ...f, geometry: null }; }
-      return { ...f, geometry: { type: "LineString", coordinates: lonlat(kept) } };
+      return r.fail === "degenerate" ? f : inPlace(f);
     }
     if (!r.parts.length) { stats.hiddenInIntersection++; return { ...f, geometry: null }; }
     stats.snapped++;
     return asSnapped(f, r);
   });
   followNeighbors(features, out, index, proj, opts, stats);
+  unstack(features, out, proj, stats);
+  // A curb still drawn at its true position but lying well inside the drawn road reads as a curb in the middle of
+  // the street: the edge of a median or traffic island between carriageways that touch on the map. If a driver can't
+  // use it anyway (no data, no stopping, no parking), it isn't drawn; one that allows parking or loading keeps its
+  // place, odd as it looks. (Last, so a curb that follows a snapped neighbor onto the edge isn't caught.)
+  // The same for a snapped curb drawn on the inner edge of a divided road, facing the other carriageway a few meters
+  // away: that's the median's curb, not the street's.
+  out.forEach((f, i) => {
+    if (!f.geometry || usable(f)) return;
+    const side = f.properties?._side;
+    const hide = side ? facesTwin(f.geometry, side, f.properties._rc) >= 0.6 : f.geometry.type === "LineString" && insideRoad(f.geometry.coordinates.map(proj.fwd)) >= 0.6;
+    if (hide) { out[i] = { ...f, geometry: null }; stats.hiddenInRoad++; }
+  });
   return { features: out, snapped: stats.snapped, stats };
+
+  // A curb that isn't snapped is drawn at its true position (pulled onto the road if it would float off it).
+  function inPlace(f) {
+    let pts = f.geometry.coordinates.map(proj.fwd);
+    if (floating(pts, index)) { pts = clampToRoads(pts, index); stats.clamped++; }
+    const kept = trimHooks(dedupe(trimAtCrossings(pts, 0, "minor", index, opts.trim)));
+    if (kept.length < 2) { stats.hiddenInIntersection++; return { ...f, geometry: null }; }
+    // No road here and the line would cut through a building: the city geometry doesn't match any street on the
+    // map (a private passage, a drawing error). Don't draw it rather than draw it across a block.
+    if (bidx && metersThroughBuildings(kept, index, bidx) >= Math.min(6, lengthOf(kept) * 0.3)) { stats.hiddenThroughBuildings++; return { ...f, geometry: null }; }
+    return { ...f, geometry: { type: "LineString", coordinates: lonlat(kept) } };
+  }
+  // Share of a snapped curb (sampled every 3 m) with another carriageway of its road class running alongside on the
+  // side it's drawn on, its centerline no more than a road width and `gap` m beyond the curb's own edge.
+  function facesTwin(geometry, side, rc, gap = 8) {
+    const h = halfWidth(rc);
+    let n = 0, facing = 0;
+    for (const part of geometry.type === "MultiLineString" ? geometry.coordinates : [geometry.coordinates]) {
+      const c = part.map(proj.fwd);
+      for (let k = 1; k < c.length; k++) {
+        const [ax, ay] = c[k - 1], [bx, by] = c[k], L = Math.hypot(bx - ax, by - ay);
+        if (L < 0.01) continue;
+        const ux = (bx - ax) / L, uy = (by - ay) / L, nx = side * uy, ny = -side * ux; // toward the drawn edge
+        for (let d = 1.5; d < L; d += 3) {
+          const px = ax + ux * d, py = ay + uy * d;
+          n++;
+          for (const sg of index.near([px, py])) {
+            if (sg.cls !== rc || Math.abs(ux * sg.ux + uy * sg.uy) < 0.85) continue;
+            const t = ((px - sg.ax) * sg.dx + (py - sg.ay) * sg.dy) / (sg.L * sg.L);
+            if (t <= 0 || t >= 1) continue;
+            const along = (sg.ax + t * sg.dx - px) * nx + (sg.ay + t * sg.dy - py) * ny;
+            if (along > h + 1 && along <= 3 * h + gap) { facing++; break; }
+          }
+        }
+      }
+    }
+    return n ? facing / n : 0;
+  }
+  // Share of a line (sampled every 2 m) lying at least `depth` m inside some drawn road's edge.
+  function insideRoad(pts, depth = 1.5) {
+    let n = 0, inside = 0;
+    for (const p of densify(pts, 2)) { n++; if (onSomeRoad(p, index, -depth)) inside++; }
+    return n ? inside / n : 0;
+  }
+
+  // Two curbs must never be drawn on the same stretch of the same road edge. Snapping can put one there that doesn't
+  // belong: the curb of a median between carriageways that touch on the map goes to the outer edge of the nearer one,
+  // a curb that would sit inside the other carriageway is flipped outward, a loose second pass or a neighbor's lead
+  // picks the wrong road. That curb then covers the real curbs of that edge. Where two snapped curbs are drawn on top
+  // of each other for a real length, the one whose true position is clearly farther from that edge is the misplaced
+  // one, and it's drawn at its true position instead (or not at all if it has no rules). Curbs that the city itself records on top of each other (both
+  // equally close) are left alone: which rule wins there is the rules' business, not the drawing's.
+  function unstack(raw, out, proj, stats, { step = 2, near = 1.5, minOverlap = 10, margin = 3 } = {}) {
+    stats.unstacked = 0;
+    const cell = 6, grid = new Map(), samples = new Map(), rawCache = new Map(), key = (x, y) => `${Math.floor(x / cell)},${Math.floor(y / cell)}`;
+    // Drawn position of each snapped curb, sampled every `step` m: centerline pushed to its edge like the map does.
+    out.forEach((f, i) => {
+      const side = f.properties?._side;
+      if (!side || !f.geometry) return;
+      const off = side * (halfWidth(f.properties._rc) - 0.6), list = [];
+      const parts = f.geometry.type === "MultiLineString" ? f.geometry.coordinates : [f.geometry.coordinates];
+      for (const part of parts) {
+        const c = part.map(proj.fwd);
+        for (let k = 1; k < c.length; k++) {
+          const [ax, ay] = c[k - 1], [bx, by] = c[k], L = Math.hypot(bx - ax, by - ay);
+          if (L < 0.01) continue;
+          const ux = (bx - ax) / L, uy = (by - ay) / L;
+          for (let d = step / 2; d < L; d += step) list.push({ i, x: ax + ux * d + off * uy, y: ay + uy * d - off * ux, ux, uy });
+        }
+      }
+      samples.set(i, list);
+      for (const p of list) { const kk = key(p.x, p.y); (grid.get(kk) || grid.set(kk, []).get(kk)).push(p); }
+    });
+    // Meters of overlap between each pair, and how far each curb's true line is from where it's drawn there.
+    const pairs = new Map();
+    for (const [i, list] of samples) for (const p of list) {
+      const gx = Math.floor(p.x / cell), gy = Math.floor(p.y / cell), hit = new Set();
+      for (let a = gx - 1; a <= gx + 1; a++) for (let b = gy - 1; b <= gy + 1; b++) for (const q of grid.get(`${a},${b}`) || []) {
+        if (q.i <= i || hit.has(q.i) || Math.abs(p.ux * q.ux + p.uy * q.uy) < 0.9 || Math.hypot(p.x - q.x, p.y - q.y) > near) continue;
+        hit.add(q.i);
+        const k = `${i},${q.i}`, e = pairs.get(k) || pairs.set(k, { i, j: q.i, n: 0, di: 0, dj: 0 }).get(k);
+        e.n++; e.di += distTo([p.x, p.y], i); e.dj += distTo([q.x, q.y], q.i);
+      }
+    }
+    function distTo(p, i) {
+      const c = rawCache.get(i) || rawCache.set(i, raw[i].geometry.coordinates.map(proj.fwd)).get(i);
+      let best = Infinity;
+      for (let k = 1; k < c.length; k++) {
+        const [ax, ay] = c[k - 1], dx = c[k][0] - ax, dy = c[k][1] - ay, t = Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / (dx * dx + dy * dy || 1)));
+        best = Math.min(best, Math.hypot(p[0] - ax - t * dx, p[1] - ay - t * dy));
+      }
+      return best;
+    }
+    const moved = new Set();
+    for (const e of [...pairs.values()].sort((x, y) => y.n - x.n)) {
+      if (e.n * step < minOverlap || moved.has(e.i) || moved.has(e.j)) continue;
+      const di = e.di / e.n, dj = e.dj / e.n;
+      if (Math.abs(di - dj) < margin) continue;
+      const i = di > dj ? e.i : e.j;
+      moved.add(i);
+      // A curb with no rules there only duplicates the edge's real curb (often the far side of a median or the
+      // back of a sidewalk, digitized as a curb): drawn at its true position it's a stray gray line beside the road.
+      out[i] = raw[i].properties?.curb_policy_ids?.length ? inPlace(raw[i]) : { ...raw[i], geometry: null };
+      stats.unstacked++; stats.snapped--;
+    }
+  }
 
   function asSnapped(f, r) {
     const multi = r.parts.length > 1;

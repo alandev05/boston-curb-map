@@ -73,6 +73,45 @@ describe("snapZones", () => {
     for (const y of ys(f)) expect(y).toBeCloseTo(12, 1); // on the north carriageway's centerline…
     expect(f.properties._side).toBe(-1); // …offset to its north (left of west→east travel), the outer edge
   });
+  it("doesn't draw a median's curb over the real curbs of the edge it's pushed to", () => {
+    // As above, but the north sidewalk has its own curb: the median curb would land on top of it. It's drawn at its
+    // true position instead (e.g. Huntington Ave's median at the Christian Science Plaza).
+    // Carriageways 9 m apart: their drawn surfaces overlap, so the median curb lies inside the drawn road.
+    const roads = [...ROADS, { cls: "minor", coords: [at(-200, 9), at(200, 9)] }];
+    const median = { ...zone([at(-80, 6), at(-50, 6.2), at(-20, 6)], "median"), properties: { curb_zone_id: "median", curb_policy_ids: ["p"] } }, sidewalk = zone([at(-90, 14), at(-10, 14)], "sidewalk");
+    const { features, stats } = snapZones([median, sidewalk], roads);
+    expect(features[1].properties._side).toBe(-1);
+    expect(features[0].properties._side).toBeUndefined();
+    expectSameLine(features[0].geometry.coordinates, median.geometry.coordinates);
+    expect(stats.unstacked).toBe(1);
+    // With no rules of its own it isn't drawn at all.
+    expect(snapZones([{ ...median, properties: { curb_zone_id: "median" } }, sidewalk], roads).features[0].geometry).toBeNull();
+    // Nor if its rules allow no parking: it would only be a no-stopping line down the middle of the road.
+    expect(snapZones([median, sidewalk], roads, { usable: () => false }).features[0].geometry).toBeNull();
+  });
+  it("doesn't draw an unusable curb on the inner edge of a divided road, facing the other carriageway", () => {
+    // Carriageways 14 m apart; the curb runs along the south one's north (inner) edge, facing the north one.
+    const roads = [{ cls: "primary", coords: [at(-200, 0), at(200, 0)] }, { cls: "primary", coords: [at(-200, 14), at(200, 14)] }];
+    const inner = zone([at(-80, 5), at(-20, 5)], "inner"), outer = zone([at(-80, -5), at(-20, -5)], "outer");
+    const { features, stats } = snapZones([inner, outer], roads, { usable: () => false, between: 0 });
+    expect(features[0].properties._side).toBe(-1); // snapped to the south carriageway's north edge…
+    expect(features[0].geometry).toBeNull(); // …and hidden there
+    expect(features[1].geometry).not.toBeNull(); // the street's own curb stays
+    expect(stats.hiddenInRoad).toBe(1);
+    expect(snapZones([inner], roads, { between: 0 }).features[0].geometry).not.toBeNull(); // one that allows parking stays
+  });
+  it("in a visible median, draws the curbs that allow parking (Comm Ave's mall) and not the others", () => {
+    const roads = [...ROADS, { cls: "minor", coords: [at(-200, 16), at(200, 16)] }];
+    const median = zone([at(-80, 8), at(-20, 8)]);
+    expect(snapZones([median], roads, { usable: () => true }).features[0].geometry).not.toBeNull();
+    expect(snapZones([median], roads, { usable: () => false }).features[0].geometry).toBeNull();
+  });
+  it("leaves curbs the city itself records on top of each other where they are", () => {
+    const a = zone([at(-80, 5), at(-20, 5)], "a"), b = zone([at(-70, 5.2), at(-30, 5.2)], "b");
+    const { features, stats } = snapZones([a, b], ROADS);
+    expect(features.map((f) => f.properties._side)).toEqual([-1, -1]);
+    expect(stats.unstacked).toBe(0);
+  });
   it("never draws a curb on the hidden inner edge of a divided road", () => {
     // carriageways 7 m apart; the curb sits just north of the south one. With the both-sides check off (between: 0)
     // it matches the south carriageway normally and would be drawn on its north edge, inside the north carriageway.

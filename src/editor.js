@@ -318,6 +318,9 @@ export function createEditor(d) {
   // Pieces of one drawn curb → its runs, in order along the curb. Pieces that touch are joined (a curb crossing a tile
   // edge); the runs are then strung together nearest end to nearest end, starting from the end that's farthest from
   // everything else.
+  // A run turned around to fit the order; its side of the street flips with it (line-offset follows the direction).
+  const flip = (r) => Object.assign([...r].reverse(), { flip: true });
+  const sideOf = (line) => (state.props.side || 0) * (line.flip ? -1 : 1);
   function runsOf(parts) {
     const left = parts.map((p) => [...p]), runs = [];
     while (left.length) runs.push(chain(left)); // chain() takes the pieces it joins out of `left`
@@ -328,13 +331,13 @@ export function createEditor(d) {
       const d = Math.min(...runs.filter((_, j) => j !== i).flatMap((o) => ends(o).map((x) => gdist(e, x))));
       if (!first || d > first.d) first = { i, which, d };
     }));
-    const out = [first.which === 0 ? runs[first.i] : [...runs[first.i]].reverse()], rest = runs.filter((_, j) => j !== first.i);
+    const out = [first.which === 0 ? runs[first.i] : flip(runs[first.i])], rest = runs.filter((_, j) => j !== first.i);
     while (rest.length) {
       const tail = out.at(-1).at(-1);
       let best = null;
       rest.forEach((r, j) => ends(r).forEach((e, which) => { const d = gdist(tail, e); if (!best || d < best.d) best = { j, which, d }; }));
       const r = rest.splice(best.j, 1)[0];
-      out.push(best.which === 0 ? r : [...r].reverse());
+      out.push(best.which === 0 ? r : flip(r));
     }
     return out;
   }
@@ -352,7 +355,7 @@ export function createEditor(d) {
     while (k < line.length - 1 && cum[k] < t) k++;
     const a = line[k - 1], b = line[k], u = (t - cum[k - 1]) / ((cum[k] - cum[k - 1]) || 1);
     const pa = map.project(a), pb = map.project(b), L = Math.hypot(pb.x - pa.x, pb.y - pa.y) || 1;
-    const off = (s.props.side || 0) * curbOffsetPx(s.props.rc || "minor", map.getZoom());
+    const off = sideOf(line) * curbOffsetPx(s.props.rc || "minor", map.getZoom());
     const x = pa.x + (pb.x - pa.x) * u - ((pb.y - pa.y) / L) * off, y = pa.y + (pb.y - pa.y) * u + ((pb.x - pa.x) / L) * off;
     return map.unproject([x, y]);
   }
@@ -392,7 +395,7 @@ export function createEditor(d) {
     // The part of each run between two fractions of the whole curb.
     const pieces = (x, y, kind) => s.runs.flatMap((line, i) => {
       const r0 = s.meas[i].start / s.total, r1 = (s.meas[i].start + s.meas[i].len) / s.total, lo = Math.max(x, r0), hi = Math.min(y, r1);
-      return hi - lo > 1e-6 ? [{ type: "Feature", properties: { ...s.props, kind }, geometry: { type: "LineString", coordinates: slice(line, (lo - r0) / ((r1 - r0) || 1), (hi - r0) / ((r1 - r0) || 1)) } }] : [];
+      return hi - lo > 1e-6 ? [{ type: "Feature", properties: { ...s.props, side: sideOf(line), kind }, geometry: { type: "LineString", coordinates: slice(line, (lo - r0) / ((r1 - r0) || 1), (hi - r0) / ((r1 - r0) || 1)) } }] : [];
     });
     const [a, b] = s.frac;
     const lines = { type: "FeatureCollection", features: [...pieces(a, b, "sel"), ...(a > 0.001 ? pieces(0, a, "dim") : []), ...(b < 0.999 ? pieces(b, 1, "dim") : [])] };

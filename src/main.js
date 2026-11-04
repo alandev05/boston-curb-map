@@ -5,7 +5,7 @@ import { CATEGORIES, verdict, daySchedule, policyActive, fmtSpanShort, fmtTime, 
 import { DEMO_ZONES, DEMO_POLICIES } from "./demo.js";
 import { createEditor } from "./editor.js";
 import { createModeration } from "./moderation.js";
-import { buildStyle, curbPaint, CURB_LAYERS, CURB_FADE_ZOOM, CURB_ZOOM, NO_DATA_ZOOM } from "./basemap.js";
+import { buildStyle, curbPaint, CURB_LAYERS, CURB_FADE_ZOOM, CURB_ZOOM, NO_DATA_ZOOM, PICK_ZOOM } from "./basemap.js";
 import { CODES, CATEGORY_OF, SLOT_MIN } from "./schedule.js";
 
 const $ = (s) => document.querySelector(s);
@@ -143,7 +143,7 @@ map.on("load", () => {
   }
   let hoverId = null;
   // Curb lines are only a few px wide, so hit-test with a tolerance box like Google does, skipping curbs the
-  // current zoom or legend hides (anything below CURB_ZOOM, no-data below NO_DATA_ZOOM).
+  // current zoom or legend hides (anything below CURB_ZOOM, no-data below NO_DATA_ZOOM), and none below PICK_ZOOM.
   map.on("mousemove", (e) => {
     const f = pickCurb(e.point);
     map.getCanvas().style.cursor = f ? "pointer" : "";
@@ -171,7 +171,7 @@ function shownAtZoom(f) {
   return true;
 }
 function pickCurb(pt) {
-  if (map.getZoom() < CURB_ZOOM) return null;
+  if (map.getZoom() < PICK_ZOOM) return null; // curbs are drawn from CURB_ZOOM, but only pickable from here
   const layers = ["zone-line", "zone-fill"].filter((l) => map.getLayer(l));
   // Grow the box until something visible is under it, so the nearest curb wins over a neighbor.
   for (const r of [0, 2, 4, HIT_PX]) {
@@ -462,50 +462,119 @@ new ResizeObserver(syncSheetHeight).observe($("#popup"));
 phone.addEventListener("change", () => { placeControls(); syncSheetHeight(); });
 placeControls();
 
-// ---------- search (phones) ----------
-// Photon (OpenStreetMap geocoder, CORS-open, no key) limited to the city's box. Picking a result flies there and
-// drops a pin; clearing the box removes it.
+// ---------- search ----------
+// Like Google Maps: five suggestions from the first letter, updated on every keystroke. Streets come from the build's
+// list of streets with curbs (data/streets.json, loaded on first focus), so they're instant; from the third letter,
+// places (stations, parks, buildings) from Photon (OpenStreetMap geocoder, CORS-open, no key, limited to the city's
+// box) fill in when they arrive. Picking a result flies there and drops a pin; clearing the box removes it.
 {
-  const input = $("#searchInput"), list = $("#searchResults");
-  let timer = 0, seq = 0, results = [], pin = null;
-  const close = () => { list.hidden = true; list.innerHTML = ""; };
-  const label = (f) => {
-    const p = f.properties, place = [p.district || p.locality, p.city].filter((x, i, a) => x && a.indexOf(x) === i).join(", ");
-    return { name: p.name || [p.housenumber, p.street].filter(Boolean).join(" ") || place, place: p.name ? place : "" };
+  const form = $("#search"), input = $("#searchInput"), list = $("#searchResults"), LIMIT = 5;
+  let seq = 0, timer = 0, shown = [], places = [], active = -1, pin = null, streets = [], loading = null;
+  const loadStreets = () => (loading ||= fetch("/data/streets.json").then((r) => (r.ok ? r.json() : [])).catch(() => []).then((d) => (streets = d)));
+  const norm = (s) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const close = () => { list.hidden = true; form.classList.remove("open"); active = -1; };
+  // Where the typed words match a name: each one the start of a word of it, in order ("mass ave" → Massachusetts
+  // Avenue). [[from, to], …] or null.
+  const matchAt = (name, q) => {
+    const n = norm(name), words = [...n.matchAll(/[a-z0-9']+/g)], out = [];
+    let w = 0;
+    for (const t of q.split(/\s+/).filter(Boolean)) {
+      while (w < words.length && !words[w][0].startsWith(t)) w++;
+      if (w === words.length) return null;
+      out.push([words[w].index, words[w].index + t.length]);
+      w++;
+    }
+    return out.length ? out : null;
   };
-  function go(f) {
-    const p = f.properties, [lng, lat] = f.geometry.coordinates;
-    input.value = label(f).name; input.blur(); close(); hidePopup(); setSheet(false);
-    (pin ||= new maplibregl.Marker({ color: "#3ea8ff" })).setLngLat([lng, lat]).addTo(map);
-    if (p.extent) map.fitBounds([[p.extent[0], p.extent[3]], [p.extent[2], p.extent[1]]], { padding: 60, maxZoom: 17.5 });
-    else map.flyTo({ center: [lng, lat], zoom: 17 });
+  const bold = (name, at) => {
+    let html = "", k = 0;
+    for (const [a, b] of at || []) { html += esc(name.slice(k, a)) + `<b>${esc(name.slice(a, b))}</b>`; k = b; }
+    return html + esc(name.slice(k));
+  };
+  function streetMatches(q) {
+    const c = map.getCenter(), out = [];
+    for (const [name, place, w, s, e, n, anchors] of streets) {
+      const at = matchAt(name, q);
+      if (!at) continue;
+      const dist = Math.hypot((Math.max(w, Math.min(e, c.lng)) - c.lng) * 0.74, Math.max(s, Math.min(n, c.lat)) - c.lat);
+      out.push({ name, place, at, bbox: [w, s, e, n], anchors, rank: (at[0][0] ? 1 : 0) + dist * 20 });
+    }
+    return out.sort((a, b) => a.rank - b.rank || a.name.length - b.name.length);
   }
-  async function lookup(q) {
-    const my = ++seq, c = map.getCenter();
-    try {
-      const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=10&lang=en&bbox=${CITY_BBOX.join(",")}&lat=${c.lat}&lon=${c.lng}`);
-      if (my !== seq) return;
-      // A long street comes back once per OSM segment; keep the first (nearest) of each name + neighborhood.
-      const seen = new Set();
-      results = ((await r.json()).features || []).filter((f) => { const l = label(f), k = `${l.name}|${l.place}`; return !seen.has(k) && seen.add(k); });
-    } catch { if (my === seq) results = []; }
-    if (my !== seq || !input.value.trim()) return;
-    list.innerHTML = results.length
-      ? results.map((f, i) => { const l = label(f); return `<li role="option" data-i="${i}">${esc(l.name)}${l.place ? `<small>${esc(l.place)}</small>` : ""}</li>`; }).join("")
-      : `<li class="empty">No matches in Boston</li>`;
-    list.hidden = false;
+  const placeOf = (f) => {
+    const p = f.properties, where = [p.district || p.locality, p.city].filter((x, i, a) => x && a.indexOf(x) === i).join(", ");
+    const name = p.name || [p.housenumber, p.street].filter(Boolean).join(" ") || where;
+    const [lng, lat] = f.geometry.coordinates;
+    return { name, place: p.name ? where : "", at: null, lngLat: [lng, lat], bbox: p.extent ? [p.extent[0], p.extent[3], p.extent[2], p.extent[1]] : null };
+  };
+  // Streets first, places after; when both have matches, at most three streets so places get a look in.
+  function render(q) {
+    const st = streetMatches(q), pl = places.filter((p) => !st.some((x) => norm(x.name) === norm(p.name)));
+    const nst = Math.min(st.length, Math.max(LIMIT - pl.length, pl.length ? 3 : LIMIT));
+    shown = [...st.slice(0, nst), ...pl].slice(0, LIMIT);
+    active = -1;
+    if (!shown.length) { list.innerHTML = q.length >= 3 ? `<li class="empty">No matches in Boston</li>` : ""; }
+    else list.innerHTML = shown.map((r, i) => {
+      const name = bold(r.name, r.at || matchAt(r.name, q));
+      return `<li role="option" data-i="${i}"><svg class="pin" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6.5-6.2-6.5-11.2a6.5 6.5 0 0 1 13 0C18.5 14.8 12 21 12 21z"/><circle cx="12" cy="9.8" r="2.3"/></svg><span class="txt"><span class="nm">${name}</span>${r.place ? ` <small>${esc(r.place)}</small>` : ""}</span></li>`;
+    }).join("");
+    const open = !!list.innerHTML;
+    list.hidden = !open; form.classList.toggle("open", open);
   }
-  input.addEventListener("input", () => {
+  function setActive(i) {
+    active = (i + shown.length) % shown.length;
+    list.querySelectorAll("li[data-i]").forEach((li) => li.setAttribute("aria-selected", String(+li.dataset.i === active)));
+  }
+  async function update() {
+    const q = norm(input.value.trim()), my = ++seq;
     clearTimeout(timer);
-    const q = input.value.trim();
-    if (q.length < 3) { seq++; close(); if (!q && pin) { pin.remove(); pin = null; } return; }
-    timer = setTimeout(() => lookup(q), 250);
+    if (!q) { places = []; close(); if (pin) { pin.remove(); pin = null; } return; }
+    await loadStreets();
+    if (my !== seq) return;
+    places = places.filter((p) => matchAt(p.name, q)); // keep what still fits while the next answer is on its way
+    render(q);
+    if (q.length < 3) return;
+    timer = setTimeout(async () => {
+      try {
+        const c = map.getCenter();
+        const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(input.value.trim())}&limit=8&lang=en&bbox=${CITY_BBOX.join(",")}&lat=${c.lat}&lon=${c.lng}`);
+        const found = ((await r.json()).features || []).filter((f) => f.properties.osm_key !== "highway" && (f.properties.city || "Boston") === "Boston").map(placeOf); // the map is Boston's curbs
+        if (my !== seq) return;
+        const seen = new Set();
+        places = found.filter((p) => { const k = `${p.name}|${p.place}`; return !seen.has(k) && seen.add(k); });
+        render(q);
+      } catch { /* streets alone, then */ }
+    }, 120);
+  }
+  function go(r) {
+    input.value = r.name; input.blur(); close(); hidePopup(); setSheet(false);
+    // On desktop, frame it in the map right of the panel.
+    const left = phone.matches ? 0 : $("#panel").offsetWidth + 16, padding = { top: 80, bottom: 60, left: left + 60, right: 60 };
+    let target = r.lngLat;
+    if (r.bbox) {
+      const cam = map.cameraForBounds([[r.bbox[0], r.bbox[1]], [r.bbox[2], r.bbox[3]]], { padding, maxZoom: 17.5 });
+      if (cam && cam.zoom >= 15) { map.fitBounds([[r.bbox[0], r.bbox[1]], [r.bbox[2], r.bbox[3]]], { padding, maxZoom: 17.5 }); target ||= cam.center.toArray?.() || [cam.center.lng, cam.center.lat]; }
+      else if (r.anchors?.length) {
+        // A long street: go to its stretch nearest what's on screen, close enough to pick a curb.
+        const c = map.getCenter();
+        let best = null;
+        for (let k = 0; k < r.anchors.length; k += 2) { const d = Math.hypot((r.anchors[k] - c.lng) * 0.74, r.anchors[k + 1] - c.lat); if (!best || d < best.d) best = { d, p: [r.anchors[k], r.anchors[k + 1]] }; }
+        target = best.p;
+        map.flyTo({ center: target, zoom: 16.5, offset: [left / 2, 0] });
+      } else { target = cam ? [cam.center.lng, cam.center.lat] : [(r.bbox[0] + r.bbox[2]) / 2, (r.bbox[1] + r.bbox[3]) / 2]; map.flyTo({ center: target, zoom: 15, offset: [left / 2, 0] }); }
+    } else map.flyTo({ center: target, zoom: 17, offset: [left / 2, 0] });
+    (pin ||= new maplibregl.Marker({ color: "#3ea8ff" })).setLngLat(target).addTo(map);
+  }
+  input.addEventListener("input", update);
+  input.addEventListener("focus", () => { setSheet(false); loadStreets(); if (input.value.trim()) update(); });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { close(); input.blur(); }
+    else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && shown.length && !list.hidden) { e.preventDefault(); setActive(active + (e.key === "ArrowDown" ? 1 : -1)); }
   });
-  input.addEventListener("focus", () => { setSheet(false); if (list.innerHTML) list.hidden = false; });
-  input.addEventListener("keydown", (e) => { if (e.key === "Escape") { close(); input.blur(); } });
-  $("#search").addEventListener("submit", (e) => { e.preventDefault(); if (results[0]) go(results[0]); });
-  list.addEventListener("click", (e) => { const li = e.target.closest("li[data-i]"); if (li) go(results[+li.dataset.i]); });
-  map.on("movestart", () => !list.hidden && document.activeElement !== input && close());
+  form.addEventListener("submit", (e) => { e.preventDefault(); const r = shown[active >= 0 ? active : 0]; if (r) go(r); });
+  list.addEventListener("mousedown", (e) => e.preventDefault()); // keep focus in the box while clicking a result
+  list.addEventListener("click", (e) => { const li = e.target.closest("li[data-i]"); if (li) go(shown[+li.dataset.i]); });
+  input.addEventListener("blur", () => setTimeout(close, 0));
   map.on("click", () => { close(); input.blur(); });
 }
 buildTimeControls();
@@ -590,6 +659,7 @@ function showPopup(feature, lngLat) {
     <div class="meta">${p.user_zone_id ? `Zone #${esc(p.user_zone_id)} · ` : ""}${fmtDay(t)} · ${fmtClock(t)}${demoMode ? " · <b>demo data</b>" : ""}</div>
     ${rows ? `<ul class="agenda">${rows}</ul>` : `<p class="empty">No sign data recorded for this curb.</p>`}
     ${tags || partial ? `<ul class="tags">${partial}${tags}</ul>` : ""}
+    ${goLinks(curbSpot(feature, lngLat))}
     ${mode === "tiles" ? `<div class="curb-actions"></div>` : ""}`;
   if (mode === "tiles") editor.actions($("#popup .curb-actions"), feature, p, () => showPopup(feature, lngLat), lngLat);
   $("#popup").classList.remove("hidden");
@@ -608,6 +678,34 @@ function showPopup(feature, lngLat) {
   }
   el.style.left = Math.min(Math.max(12, pt.x - W / 2), innerWidth - W - 12) + "px";
   el.style.top = Math.max(12, pt.y - H - 18) + "px";
+}
+// The point of the curb nearest the tap (on the drawn line: the road's centerline for a snapped curb) and, for a
+// snapped curb, the heading that looks from the road at it (+1 = right of the line's direction).
+function curbSpot(feature, lngLat) {
+  const g = feature.geometry, lines = g?.type === "MultiLineString" ? g.coordinates : g?.type === "LineString" ? [g.coordinates] : [];
+  const q = map.project(lngLat);
+  let best = null;
+  for (const l of lines) for (let k = 1; k < l.length; k++) {
+    const a = map.project(l[k - 1]), b = map.project(l[k]), dx = b.x - a.x, dy = b.y - a.y;
+    const u = Math.max(0, Math.min(1, ((q.x - a.x) * dx + (q.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
+    const d = Math.hypot(q.x - a.x - u * dx, q.y - a.y - u * dy);
+    if (!best || d < best.d) best = { d, a: l[k - 1], b: l[k], u };
+  }
+  if (!best) return { lng: lngLat.lng, lat: lngLat.lat, heading: null };
+  const { a, b, u } = best, lng = a[0] + (b[0] - a[0]) * u, lat = a[1] + (b[1] - a[1]) * u;
+  const bearing = (Math.atan2((b[0] - a[0]) * Math.cos((lat * Math.PI) / 180), b[1] - a[1]) * 180) / Math.PI;
+  const side = feature.properties?.side || 0;
+  return { lng, lat, heading: side ? Math.round((bearing + 90 * side + 360) % 360) : null };
+}
+// Look at the curb in Street View, or get driving directions to it.
+function goLinks({ lng, lat, heading }) {
+  const at = `${lat.toFixed(6)},${lng.toFixed(6)}`;
+  const link = (href, label, title) => `<a class="go" href="${href}" target="_blank" rel="noopener" title="${title}">${label}</a>`;
+  return `<div class="go-row">
+    ${link(`https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${at}${heading != null ? `&heading=${heading}` : ""}`, "Street View", "Look at this curb in Google Street View")}
+    ${link(`https://www.google.com/maps/dir/?api=1&destination=${at}&travelmode=driving`, "Google Maps", "Driving directions to this curb in Google Maps")}
+    ${link(`https://maps.apple.com/?daddr=${at}&dirflg=d`, "Apple Maps", "Driving directions to this curb in Apple Maps")}
+  </div>`;
 }
 let keepPopup = false;
 function hidePopup() {

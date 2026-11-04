@@ -42,6 +42,13 @@ describe("assignMeters", () => {
     const { features } = run([zone("a", 0, 60, ["feedMeter"])], [meter(20, { PAY_POLICY: "08:00AM-04:00PM MON-FRI $0.25 120, 08:00AM-06:00PM SAT $0.25 120", TOW_AWAY: "04:00PM-06:00PM MON-FRI" })]);
     for (const id of features[0].properties.curb_policy_ids) expect(id).not.toMatch(/,/);
   });
+  it("a meter about as close to a curb with rules as to one without (a median's edge) goes to the one with rules", () => {
+    // The street's curb at y=0, the edge of a median 3.2 m away at y=3.2; the meter at y=1.7 is a hair closer to the median.
+    const median = { ...zone("median", 0, 60, []), geometry: { type: "LineString", coordinates: [at(0, 3.2), at(60, 3.2)] } };
+    const { features } = run([zone("street", 0, 60, ["resident"]), median], [{ ...meter(20), geometry: { type: "Point", coordinates: at(20, 1.7) } }]);
+    expect(features[0].properties.curb_policy_ids.length).toBeGreaterThan(1);
+    expect(features[1].properties.curb_policy_ids).toEqual([]);
+  });
   it("gives a curb with no rules the meter's schedule", () => {
     const { features, pols } = run([zone("a", 0, 60, [])], [meter(20)]);
     expect(verdict(features[0].properties, pols, "sat", 10 * 60).category).toBe("paid");

@@ -53,6 +53,12 @@ export function decodeNames(buf, x, y, z = ROAD_ZOOM) {
     const g = f.toGeoJSON(x, y, z).geometry;
     for (const coords of g.type === "LineString" ? [g.coordinates] : g.coordinates) names.push({ name, coords });
   }
+  // Neighborhood and place labels (point), for naming which stretch of a street a search result is.
+  const places = [], pl = t.layers.place;
+  for (let i = 0; i < (pl?.length || 0); i++) {
+    const f = pl.feature(i), name = f.properties.name_en || f.properties.name;
+    if (name && f.type === 1) places.push({ name, cls: f.properties.class, coord: f.toGeoJSON(x, y, z).geometry.coordinates });
+  }
   const h = t.layers.housenumber;
   for (let i = 0; i < (h?.length || 0); i++) {
     const f = h.feature(i), num = parseInt(f.properties.housenumber, 10);
@@ -60,7 +66,7 @@ export function decodeNames(buf, x, y, z = ROAD_ZOOM) {
     const g = f.toGeoJSON(x, y, z).geometry;
     numbers.push({ num, coord: g.type === "Point" ? g.coordinates : g.coordinates[0] });
   }
-  return { names, numbers };
+  return { names, numbers, places };
 }
 
 export async function loadRoads(bbox, opts = {}) {
@@ -72,7 +78,7 @@ export async function loadOsm(bbox, { cacheDir, offline = false, log = console.e
   await mkdir(cacheDir, { recursive: true });
   let tileUrl = null;
   const x0 = lon2x(bbox[0], ROAD_ZOOM), x1 = lon2x(bbox[2], ROAD_ZOOM), y0 = lat2y(bbox[3], ROAD_ZOOM), y1 = lat2y(bbox[1], ROAD_ZOOM);
-  const roads = [], buildings = [], names = [], numbers = [];
+  const roads = [], buildings = [], names = [], numbers = [], places = [];
   let fetched = 0, missing = 0;
   for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
     const file = path.join(cacheDir, `${ROAD_ZOOM}-${x}-${y}.pbf`);
@@ -88,8 +94,8 @@ export async function loadOsm(bbox, { cacheDir, offline = false, log = console.e
     roads.push(...decodeRoads(buf, x, y));
     buildings.push(...decodeBuildings(buf, x, y));
     const nn = decodeNames(buf, x, y);
-    names.push(...nn.names); numbers.push(...nn.numbers);
+    names.push(...nn.names); numbers.push(...nn.numbers); places.push(...nn.places);
   }
   log(`  osm: ${roads.length} road lines, ${buildings.length} buildings from ${(x1 - x0 + 1) * (y1 - y0 + 1) - missing} tiles (${fetched} fetched, ${missing} unavailable)`);
-  return { roads, buildings, names, numbers };
+  return { roads, buildings, names, numbers, places };
 }

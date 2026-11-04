@@ -90,6 +90,9 @@ const roadRank = ["match", ["get", "class"], ...CLASSES.flatMap((c) => [c, ROADS
 // what made zooming slow, so curbs only appear from CURB_FADE_ZOOM, fully drawn and clickable by CURB_ZOOM.
 // "No data" curbs (never anything else) join, dimmed, at NO_DATA_ZOOM.
 export const CURB_FADE_ZOOM = 12, CURB_ZOOM = 12.3, NO_DATA_ZOOM = 14;
+// Curbs can be hovered and tapped from the zoom where station names (Ruggles, Symphony) appear: zoomed out further,
+// a tap lands on a block's worth of curbs, so it's more likely to pick the wrong one than the one meant.
+export const PICK_ZOOM = 13;
 // `bind` (optional): ["name", expr, …] — variables the other expressions use as ["var", name] (the curb's category
 // looked up once per property instead of once per use in the JSON). Each paint value that refers to one is
 // wrapped in a single "let".
@@ -187,7 +190,7 @@ export function buildStyle(theme, { colorExpr, dimExpr, gateExpr, bind, tiles, f
         paint: { "text-color": P.label, "text-halo-color": P.halo, "text-halo-width": 1.2 } })),
 
       omt("park-label", "symbol", "park", { minzoom: 14, filter: ["has", "name"], layout: { "text-field": NAME, "text-font": FONT, "text-size": 11, "text-max-width": 8, "text-padding": 6 }, paint: { "text-color": P.label, "text-halo-color": P.halo, "text-halo-width": 1.2 } }),
-      omt("poi-transit", "symbol", "poi", { minzoom: 13, filter: ["all", ["==", ["get", "class"], "railway"], ["in", ["get", "subclass"], ["literal", ["station", "subway", "halt", "tram_stop"]]]],
+      omt("poi-transit", "symbol", "poi", { minzoom: PICK_ZOOM, filter: ["all", ["==", ["get", "class"], "railway"], ["in", ["get", "subclass"], ["literal", ["station", "subway", "halt", "tram_stop"]]]],
         layout: { "text-field": ["format", "■ ", { "text-color": P.transit }, NAME, {}], "text-font": FONT, "text-size": 11, "text-anchor": "left", "text-offset": [0.3, 0], "text-optional": true, "text-padding": 4 },
         paint: { "text-color": P.labelStrong, "text-halo-color": P.halo, "text-halo-width": 1.2 } }),
       // POIs: only the most prominent from 14, the rest from 16 — muted so they never compete with curb colors.

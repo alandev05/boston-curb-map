@@ -22,12 +22,13 @@ import vtpbf from "vt-pbf";
 import { encodeSchedule, dominant } from "../src/schedule.js";
 import { snapZones, lineLength } from "./snap.js";
 import { CURB_FADE_ZOOM, NO_DATA_ZOOM } from "../src/basemap.js";
-import { isRealPolicy, reasonOf } from "../src/rules.js";
+import { isRealPolicy, reasonOf, categorize } from "../src/rules.js";
 export { NO_DATA_ZOOM };
 import { loadOsm } from "./osm-roads.js";
 import { parseCsv, assignSweeping } from "./sweeping.js";
 import { assignMeters } from "./meters.js";
 import { applyCommunity } from "./community.js";
+import { buildStreets } from "./streets.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IN = process.env.DATA_DIR || path.join(root, "data", "raw");
@@ -72,7 +73,7 @@ function bboxOf(features) {
   return [a, b, c, d];
 }
 
-export async function buildTiles(features, policies, { out = OUT, log = console.error, meta = {}, meters = [], roads = null, buildings = null, names = null, numbers = null, addresses = null, sweeping = null, community = [] } = {}) {
+export async function buildTiles(features, policies, { out = OUT, log = console.error, meta = {}, meters = [], roads = null, buildings = null, names = null, numbers = null, places = null, addresses = null, sweeping = null, community = [] } = {}) {
   policies = { ...policies };
   // Placeholders the city's survey left where it couldn't read a sign ("Unusable Image", on ~38k curbs) aren't rules:
   // dropped here, so they're neither shipped nor splitting otherwise identical curbs into different rule sets.
@@ -87,8 +88,10 @@ export async function buildTiles(features, policies, { out = OUT, log = console.
   if (comm) features = comm.features;
   const metered = meters.length ? assignMeters(features, policies, meters, { log }) : null;
   if (metered) features = metered.features;
-  const snap = snapZones(features, roads, { buildings });
-  if (roads) log(`  snapped ${snap.snapped} of ${features.length} curbs onto road centerlines (${snap.stats.relaxed} on a second, looser pass, ${snap.stats.followed} by following a snapped neighbor); left in place: ${JSON.stringify(snap.stats.unsnapped)} (${snap.stats.clamped} pulled onto the nearest road edge); hidden inside intersections: ${snap.stats.hiddenInIntersection}; hidden (would cross a building, no road): ${snap.stats.hiddenThroughBuildings}`);
+  // A curb a driver can use: any rule that isn't a ban (no stopping / no parking / travel lane).
+  const usable = (f) => (f.properties?.curb_policy_ids || []).some((id) => policies[id] && !["no_stopping", "no_parking", "travel", "unknown"].includes(categorize(policies[id].rules?.[0] || {})));
+  const snap = snapZones(features, roads, { buildings, usable });
+  if (roads) log(`  snapped ${snap.snapped} of ${features.length} curbs onto road centerlines (${snap.stats.relaxed} on a second, looser pass, ${snap.stats.followed} by following a snapped neighbor); left in place: ${JSON.stringify(snap.stats.unsnapped)} (${snap.stats.clamped} pulled onto the nearest road edge); moved off another curb's edge (to their true position, or hidden if they have no rules): ${snap.stats.unstacked}; hidden inside intersections: ${snap.stats.hiddenInIntersection}; hidden (would cross a building, no road): ${snap.stats.hiddenThroughBuildings}; hidden (no parking, only drawable in the middle of a road): ${snap.stats.hiddenInRoad}`);
   // Street sweeping (city table, no geometry) joins onto the curbs as drawn; adds `sweep-*` policies.
   const sweep = sweeping?.length && names?.length ? assignSweeping(snap.features, policies, sweeping, { names, numbers, addresses }, { log }) : null;
   // Community pieces carry what the sign says, street cleaning included: no table-joined sweeping on top.
@@ -132,6 +135,12 @@ export async function buildTiles(features, policies, { out = OUT, log = console.
   await mkdir(path.join(out, "data"), { recursive: true });
   await writeFile(path.join(out, "data", "policies.json"), JSON.stringify(slimPolicies));
   await writeFile(path.join(out, "data", "rulesets.json"), JSON.stringify(rulesets));
+  // Streets with curbs, for the search box's instant suggestions (scripts/streets.js).
+  if (names?.length) {
+    const streets = buildStreets(names, places || [], snap.features);
+    await writeFile(path.join(out, "data", "streets.json"), JSON.stringify(streets));
+    log(`  streets: ${streets.length} for search`);
+  }
   await rm(path.join(out, "data", "curbs"), { recursive: true, force: true });
   await mkdir(path.join(out, "data", "curbs"), { recursive: true });
   for (let k = 0; k * CURB_SHARD < curbs.length; k++) await writeFile(path.join(out, "data", "curbs", `${k}.json`), JSON.stringify(curbs.slice(k * CURB_SHARD, (k + 1) * CURB_SHARD)));
@@ -152,6 +161,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const offline = process.argv.includes("--offline") || process.env.DATA_OFFLINE === "1";
   const osm = process.env.NO_SNAP ? null : await loadOsm(bboxOf(fc.features.filter((f) => f.geometry)), { cacheDir: path.join(IN, "osm"), offline });
   const sweeping = parseCsv(await readFile(path.join(IN, "sweeping.csv"), "utf8").catch(() => ""));
-  const m = await buildTiles(fc.features, policies, { meta, meters, roads: osm?.roads, buildings: osm?.buildings, names: osm?.names, numbers: osm?.numbers, sweeping, community, addresses });
+  const m = await buildTiles(fc.features, policies, { meta, meters, roads: osm?.roads, buildings: osm?.buildings, names: osm?.names, numbers: osm?.numbers, places: osm?.places, sweeping, community, addresses });
   console.log(`built ${m.tiles} tiles (${(m.tile_bytes / 1024).toFixed(0)} KB gz) for ${m.zones} zones + ${m.meters} meters in ${((Date.now() - t) / 1000).toFixed(1)}s → ${OUT}`);
 }

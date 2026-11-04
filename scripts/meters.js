@@ -72,7 +72,7 @@ function towPolicy(tow, policies) {
 
 // features: raw curb zones (city geometry); policies: mutated (meter rules added); meters: GeoJSON points.
 // Returns new features with updated curb_policy_ids, and stats.
-export function assignMeters(features, policies, meters, { maxDist = 6, log = () => {} } = {}) {
+export function assignMeters(features, policies, meters, { maxDist = 6, tie = 1.5, log = () => {} } = {}) {
   const stats = { meters: 0, matched: 0, curbs: 0, replacedFeedMeter: 0, gaveNoDataCurb: 0, tow: 0, spotDemoted: 0, spotCurbs: 0 };
   const lat0 = features.find((f) => f.geometry)?.geometry.coordinates.flat(3)[1] ?? 42.35;
   const P = projector(lat0), cell = 25, grid = new Map(), segs = [];
@@ -92,20 +92,25 @@ export function assignMeters(features, policies, meters, { maxDist = 6, log = ()
   // context of the whole curb (its meters, its length) for every piece the community didn't take over.
   const curbKey = (zi) => features[zi].properties?.curb_zone_id ?? `#${zi}`;
   const onCurb = new Map(); // curb → [meter props]
+  const hasRules = (zi) => (features[zi].properties?.curb_policy_ids || []).some((id) => isRealPolicy(policies[id]));
   for (const m of meters) {
     const p = m.properties || {};
     if (m.geometry?.type !== "Point" || (p.METER_STATE && p.METER_STATE !== "ACTIVE") || !p.PAY_POLICY) continue;
     stats.meters++;
     const q = P.fwd(m.geometry.coordinates), i0 = Math.floor(q[0] / cell), j0 = Math.floor(q[1] / cell);
-    let best = null;
+    const near = [];
     for (let i = i0 - 1; i <= i0 + 1; i++) for (let j = j0 - 1; j <= j0 + 1; j++) for (const id of grid.get(`${i},${j}`) || []) {
       const { a, b, zi } = segs[id], dx = b[0] - a[0], dy = b[1] - a[1];
       const t = ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / (dx * dx + dy * dy || 1);
       if (t < 0 || t > 1) continue;
       const d = Math.hypot(q[0] - a[0] - t * dx, q[1] - a[1] - t * dy);
-      if (d <= maxDist && (!best || d < best.d)) best = { d, zi };
+      if (d <= maxDist) near.push({ d, zi });
     }
-    if (!best) continue;
+    if (!near.length) continue;
+    // Nearly as close to a curb with rules as to one without (a meter standing between the street's curb and the
+    // edge of a median, island or sidewalk the city also drew as a curb): it belongs to the curb with rules.
+    near.sort((x, y) => x.d - y.d);
+    const best = near.find((c) => c.d <= near[0].d + tie && hasRules(c.zi)) || near[0];
     stats.matched++;
     const k = curbKey(best.zi);
     (onCurb.get(k) || onCurb.set(k, []).get(k)).push(p);

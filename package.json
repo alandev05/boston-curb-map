@@ -22,6 +22,7 @@
     "ui:serve": "node scripts/ui-fixture.js && UI_PUBLIC=.ui/public vite build --outDir .ui/dist --emptyOutDir && DIST=.ui/dist node scripts/dev-server.js --port 4173"
   },
   "dependencies": {
+    "@vercel/analytics": "^2.0.1",
     "geojson-vt": "^4.0.3",
     "maplibre-gl": "^4.7.1",
     "vt-pbf": "^3.1.3"

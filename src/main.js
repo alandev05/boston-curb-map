@@ -7,6 +7,9 @@ import { createEditor } from "./editor.js";
 import { createModeration } from "./moderation.js";
 import { buildStyle, curbPaint, CURB_LAYERS, CURB_FADE_ZOOM, CURB_ZOOM, NO_DATA_ZOOM, PICK_ZOOM } from "./basemap.js";
 import { CODES, CATEGORY_OF, SLOT_MIN } from "./schedule.js";
+import { inject as injectAnalytics } from "@vercel/analytics";
+
+injectAnalytics();
 
 const $ = (s) => document.querySelector(s);
 // Data-loading progress and problems go to the console (the panel has no status line).
